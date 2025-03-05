@@ -1,3 +1,5 @@
+!pip install ccxt pandas numpy tensorflow sklearn python-telegram-bot python-dotenv
+
 import ccxt
 import pandas as pd
 import numpy as np
@@ -8,24 +10,28 @@ import threading
 from concurrent.futures import ThreadPoolExecutor
 from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Dropout
-from tensorflow.keras.callbacks import EarlyStopping
 from sklearn.preprocessing import MinMaxScaler
 import os
 from dotenv import load_dotenv
 import telegram
 from telegram.ext import Updater, CommandHandler
+import requests
+from io import StringIO
 
 # Logging ayarları
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Repository'den dosyaların bulunduğu dizini belirt
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))  # bot.py dosyasının bulunduğu dizin
-ENV_FILE = os.path.join(BASE_DIR, 'gateio.env')
+# GitHub'dan gateio.env dosyasını çek
+GITHUB_ENV_URL = "https://raw.githubusercontent.com/Algdn46/algdn46/main/gateio.env"
+response = requests.get(GITHUB_ENV_URL)
+if response.status_code != 200:
+    raise FileNotFoundError("gateio.env dosyası GitHub'da bulunamadı veya erişilemedi!")
 
-# .env dosyasını yükle
-if not os.path.exists(ENV_FILE):
-    raise FileNotFoundError(f"{ENV_FILE} dosyası bulunamadı!")
-load_dotenv(ENV_FILE)
+# .env içeriğini yükle
+env_content = response.text
+with open('gateio.env', 'w') as f:
+    f.write(env_content)
+load_dotenv('gateio.env')
 
 # Gate.io API
 exchange = ccxt.gate({
@@ -72,17 +78,8 @@ def create_lstm_model(output_units=1):
 
 def load_lstm_model():
     global lstm_model
-    model_path = os.path.join(BASE_DIR, 'lstm_model.h5')  # Model dosyasını BASE_DIR'den ara
-    if os.path.exists(model_path):
-        try:
-            lstm_model = load_model(model_path)
-            logging.info("LSTM modeli yüklendi.")
-        except Exception as e:
-            logging.error(f"LSTM modeli yükleme hatası: {e}")
-            lstm_model = create_lstm_model()
-    else:
-        lstm_model = create_lstm_model()
-        logging.info("Yeni LSTM modeli oluşturuldu.")
+    lstm_model = create_lstm_model()  # Colab'da model dosyası olmayacak, yeni oluşturuyoruz
+    logging.info("Yeni LSTM modeli oluşturuldu.")
 
 # Sembol Çekme
 def get_all_futures_symbols():
@@ -165,137 +162,21 @@ def generate_signal(symbol):
                 'tp_short': tp_short, 'sl_short': sl_short, 'size': position_size,
                 'time': datetime.now().strftime('%H:%M:%S')
             }
-        if chat_ids:
-            direction = 'LONG' if long_condition else 'SHORT'
-            message = f"📈 Sinyal\nSembol: {symbol}\nYön: {direction}\nGiriş: {current_price:.2f}\nTP: {tp_long if direction == 'LONG' else tp_short:.2f}\nSL: {sl_long if direction == 'LONG' else sl_short:.2f}\nBoyut: {position_size:.3f}"
-            for chat_id in chat_ids:
-                bot.send_message(chat_id=chat_id, text=message)
+        print(f"Sinyal: {symbol} - {'LONG' if long_condition else 'SHORT'} - Giriş: {current_price:.2f}")
     except Exception as e:
         logging.error(f"{symbol} sinyal hatası: {e}")
 
-# Pozisyon Yönetimi
-def open_position(signal):
-    symbol = signal['symbol']
-    try:
-        exchange.set_leverage(LEVERAGE, symbol)
-        if signal['long']:
-            exchange.create_order(symbol, 'market', 'buy', signal['size'])
-            with positions_lock:
-                open_positions[symbol] = {'side': 'long', 'entry': signal['entry'], 'tp': signal['tp_long'], 'sl': signal['sl_long'], 'size': signal['size']}
-        elif signal['short']:
-            exchange.create_order(symbol, 'market', 'sell', signal['size'])
-            with positions_lock:
-                open_positions[symbol] = {'side': 'short', 'entry': signal['entry'], 'tp': signal['tp_short'], 'sl': signal['sl_short'], 'size': signal['size']}
-        if chat_ids:
-            message = f"✅ {symbol} {open_positions[symbol]['side'].upper()} pozisyon açıldı!"
-            for chat_id in chat_ids:
-                bot.send_message(chat_id=chat_id, text=message)
-    except ccxt.ExchangeError as e:
-        logging.error(f"{symbol} pozisyon açma borsa hatası: {e}")
-    except Exception as e:
-        logging.error(f"{symbol} pozisyon açma hatası: {e}")
-
-def close_position(symbol, position):
-    try:
-        if position['side'] == 'long':
-            exchange.create_order(symbol, 'market', 'sell', position['size'])
-        else:
-            exchange.create_order(symbol, 'market', 'buy', position['size'])
-        if chat_ids:
-            message = f"❌ {symbol} pozisyon kapatıldı."
-            for chat_id in chat_ids:
-                bot.send_message(chat_id=chat_id, text=message)
-        with positions_lock:
-            del open_positions[symbol]
-    except ccxt.ExchangeError as e:
-        logging.error(f"{symbol} pozisyon kapatma borsa hatası: {e}")
-    except Exception as e:
-        logging.error(f"{symbol} pozisyon kapatma hatası: {e}")
-
-# Telegram Komutları
-def start(update, context):
-    chat_id = update.message.chat_id
-    chat_ids.add(chat_id)
-    update.message.reply_text("Gate.io Trading Bot aktif! Sinyaller burada.\nKomutlar: /stop, /signals, /positions")
-
-def stop(update, context):
-    global running
-    running = False
-    update.message.reply_text("Bot durduruluyor...")
-    time.sleep(2)
-    context.job_queue.stop()
-
-def show_signals(update, context):
-    with signals_lock:
-        if not signals:
-            update.message.reply_text("Henüz sinyal yok.")
-        else:
-            message = "📈 Güncel Sinyaller\n"
-            for sym, sig in signals.items():
-                direction = 'LONG' if sig['long'] else 'SHORT' if sig['short'] else 'NONE'
-                message += f"{sym}: {direction} - Giriş: {sig['entry']:.2f}\n"
-            update.message.reply_text(message)
-
-def show_positions(update, context):
-    with positions_lock:
-        if not open_positions:
-            update.message.reply_text("Açık pozisyon yok.")
-        else:
-            message = "📊 Açık Pozisyonlar\n"
-            for sym, pos in open_positions.items():
-                message += f"{sym}: {pos['side'].upper()} - Giriş: {pos['entry']:.2f}\n"
-            update.message.reply_text(message)
-
-# Ana Döngü
-def trading_loop():
-    while running:
-        try:
-            if SYMBOLS:
-                with ThreadPoolExecutor(max_workers=4) as executor:
-                    executor.map(generate_signal, SYMBOLS)
-                with signals_lock:
-                    for sym, sig in signals.copy().items():
-                        if (sig.get('long') or sig.get('short')) and sym not in open_positions:
-                            open_position(sig)
-                with positions_lock:
-                    for symbol in list(open_positions.keys()):
-                        position = open_positions[symbol]
-                        current_price = exchange.fetch_ticker(symbol)['last']
-                        if position['side'] == 'long' and (current_price >= position['tp'] or current_price <= position['sl']):
-                            close_position(symbol, position)
-                        elif position['side'] == 'short' and (current_price <= position['tp'] or current_price >= position['sl']):
-                            close_position(symbol, position)
-            time.sleep(60)
-        except ccxt.RequestTimeout:
-            logging.error("Borsa isteği zaman aşımına uğradı, döngü devam ediyor.")
-        except Exception as e:
-            logging.error(f"Trading loop hatası: {e}")
-
-def update_symbols_periodically():
-    while running:
-        global SYMBOLS
-        new_symbols = get_all_futures_symbols()
-        if new_symbols:
-            SYMBOLS = new_symbols
-        time.sleep(300)
-
-def main():
-    load_lstm_model()
+# Test için basit bir döngü
+def test_run():
     global SYMBOLS
     SYMBOLS = get_all_futures_symbols()
     if not SYMBOLS:
-        logging.error("Sembol listesi boş, bot durduruluyor.")
+        logging.error("Sembol listesi boş!")
         return
-    updater = Updater(TELEGRAM_TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("stop", stop))
-    dp.add_handler(CommandHandler("signals", show_signals))
-    dp.add_handler(CommandHandler("positions", show_positions))
-    threading.Thread(target=update_symbols_periodically, daemon=True).start()
-    threading.Thread(target=trading_loop, daemon=True).start()
-    updater.start_polling()
-    updater.idle()
+    print(f"Semboller yüklendi: {len(SYMBOLS)} adet")
+    for symbol in SYMBOLS[:5]:  # İlk 5 sembolü test et
+        generate_signal(symbol)
+    print("Test tamamlandı.")
 
-if __name__ == "__main__":
-    main()
+# Çalıştır
+test_run()
