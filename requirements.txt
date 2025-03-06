@@ -1,11 +1,8 @@
-
-
-# Örnek requirements.txt oluştur
-echo "requests" > requirements.txt
-echo "python-dotenv" >> requirements.txt
-echo "python-telegram-bot" >> requirements.txt
-
-# GitHub’a push et
-git add requirements.txt
-git commit -m "requirements.txt eklendi"
-git push origin main
+ccxt
+pandas
+numpy<2
+tensorflow
+scikit-learn
+python-telegram-bot
+python-dotenv
+apscheduler
