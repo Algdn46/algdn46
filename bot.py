@@ -234,7 +234,7 @@ async def main():
     application.add_handler(CommandHandler("signals", show_signals))
 
     # Botu başlat
-    await application.start_polling()
+    await application.run_polling()
 
     # Sembolleri yükle
     markets = exchange.load_markets()
