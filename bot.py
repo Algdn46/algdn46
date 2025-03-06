@@ -44,6 +44,22 @@ if not TELEGRAM_TOKEN or not os.getenv('GATEIO_API_KEY') or not os.getenv('GATEI
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 exchange = initialize_exchange()
 
+from telegram.ext import Application, ContextTypes
+
+     async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+         print(f"Error: {context.error}")
+
+     application = Application.builder().token("TOKEN").build()
+     application.add_error_handler(error_handler)
+from telegram.ext import ApplicationBuilder
+     from telegram.request import HTTPXRequest
+
+     custom_request = HTTPXRequest(connection_pool_size=10, read_timeout=30)
+     application = ApplicationBuilder().token("TOKEN").request(custom_request).build()
+
+
+
+
 # Global Ayarlar
 CONFIG = {
     'SYMBOLS': [],
