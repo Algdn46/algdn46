@@ -36,12 +36,15 @@ def initialize_exchange():
         'options': {'defaultType': 'swap'},
     })
 
-def initialize_telegram():
-    TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-    if not TELEGRAM_TOKEN:
-        raise ValueError("Telegram token eksik!")
-    return Application.builder().token(TELEGRAM_TOKEN).build()
+from telegram.ext import Application
 
+# Telegram Bot
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+if not TELEGRAM_TOKEN or not os.getenv('GATEIO_API_KEY') or not os.getenv('GATEIO_SECRET_KEY'):
+    raise ValueError("API anahtarları veya Telegram token eksik!")
+
+# Application nesnesi oluştur
+application = Application.builder().token(TELEGRAM_TOKEN).build()
 exchange = initialize_exchange()
 application = initialize_telegram()
 
