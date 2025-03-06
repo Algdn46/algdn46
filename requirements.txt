@@ -1,5 +1,4 @@
-# Repoyu klonla
-git clone https://github.com/Algdn46/algdn46.git .
+
 
 # Örnek requirements.txt oluştur
 echo "requests" > requirements.txt
