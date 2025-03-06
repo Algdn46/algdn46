@@ -6,3 +6,4 @@ scikit-learn
 python-telegram-bot
 python-dotenv
 apscheduler
+nest_asyncio
