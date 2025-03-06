@@ -1,5 +1,4 @@
 # Yerel makinede bir klasör aç
-mkdir algdn46
 cd algdn46
 
 # Repoyu klonla
