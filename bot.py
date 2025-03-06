@@ -234,9 +234,7 @@ async def main():
     application.add_handler(CommandHandler("signals", show_signals))
 
     # Botu başlat
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
+    await application.start_polling()
 
     # Sembolleri yükle
     markets = exchange.load_markets()
@@ -248,18 +246,9 @@ async def main():
 
     # Sinyal üretim döngüsü
     while CONFIG['running']:
-        try:
-            for symbol in CONFIG['SYMBOLS'][:20]:  # Test için ilk 20 sembol
-                await generate_signal(symbol)
-            await asyncio.sleep(60)  # 1 dakikada bir kontrol
-        except Exception as e:
-            logging.error(f"Ana döngü hatası: {e}")
-            await asyncio.sleep(10)
+        for symbol in CONFIG['SYMBOLS']:
+            await generate_signal(symbol)
+        await asyncio.sleep(60)  # Her dakika sinyal üretmeyi bekle
 
-    # Temiz kapatma
-    await application.updater.stop()
-    await application.stop()
-    await application.shutdown()
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     asyncio.run(main())
