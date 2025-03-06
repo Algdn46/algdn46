@@ -1,4 +1,3 @@
-# Gerekli Kütüphaneler
 import ccxt
 import pandas as pd
 import numpy as np
@@ -27,28 +26,25 @@ logging.basicConfig(
 # Çevresel Değişkenler
 load_dotenv('gateio.env')
 
-# 1. Exchange ve Bot Kurulumu
+# Exchange ve Bot Kurulumu
 def initialize_exchange():
-    return ccxt.gate({
+    return ccxt.gateio({
         'apiKey': os.getenv('GATEIO_API_KEY'),
         'secret': os.getenv('GATEIO_SECRET_KEY'),
         'enableRateLimit': True,
         'options': {'defaultType': 'swap'},
     })
 
-from telegram.ext import Application
-
 # Telegram Bot
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+
 if not TELEGRAM_TOKEN or not os.getenv('GATEIO_API_KEY') or not os.getenv('GATEIO_SECRET_KEY'):
     raise ValueError("API anahtarları veya Telegram token eksik!")
 
-# Application nesnesi oluştur
 application = Application.builder().token(TELEGRAM_TOKEN).build()
 exchange = initialize_exchange()
-application = initialize_telegram()
 
-# 2. Global Ayarlar
+# Global Ayarlar
 CONFIG = {
     'SYMBOLS': [],
     'running': True,
@@ -65,7 +61,7 @@ CONFIG = {
     'model': None
 }
 
-# 3. LSTM Modeli
+# LSTM Modeli
 def create_lstm_model():
     model = Sequential([
         LSTM(64, return_sequences=True, input_shape=(CONFIG['LSTM_LOOKBACK'], 3)),
@@ -79,7 +75,7 @@ def create_lstm_model():
 
 CONFIG['model'] = create_lstm_model()
 
-# 4. Veri Yönetimi
+# Veri Yönetimi
 async def fetch_ohlcv(symbol: str, timeframe: str):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
@@ -94,7 +90,7 @@ def calculate_indicators(df: pd.DataFrame):
         # EMA
         df['EMA9'] = df['close'].ewm(span=CONFIG['EMA_PERIODS'][0]).mean()
         df['EMA21'] = df['close'].ewm(span=CONFIG['EMA_PERIODS'][1]).mean()
-        
+
         # RSI
         delta = df['close'].diff()
         gain = delta.clip(lower=0)
@@ -115,7 +111,7 @@ def calculate_indicators(df: pd.DataFrame):
         logging.error(f"Gösterge hesaplama hatası: {e}")
         return df
 
-# 5. Sinyal Üretimi
+# Sinyal Üretimi
 async def generate_signal(symbol: str):
     try:
         # Çoklu zaman dilimi verisi
@@ -168,18 +164,18 @@ async def generate_signal(symbol: str):
     except Exception as e:
         logging.error(f"{symbol} sinyal üretim hatası: {e}")
 
-# 6. Telegram Entegrasyonu
+# Telegram Entegrasyonu
 async def broadcast_signal(signal: dict):
     message = (
-        f"🚨 **Yeni Sinyal** 🚨\n"
-        f"• Sembol: `{signal['symbol']}`\n"
+        f"🚨 Yeni Sinyal 🚨\n"
+        f"• Sembol: {signal['symbol']}\n"
         f"• Yön: {signal['direction']}\n"
         f"• Giriş: {signal['entry']:.4f}\n"
         f"• TP: {signal['tp']:.4f}\n"
         f"• SL: {signal['sl']:.4f}\n"
         f"• Boyut: {signal['size']:.2f} USDT"
     )
-    
+
     for chat_id in CONFIG['chat_ids']:
         try:
             await application.bot.send_message(
@@ -190,13 +186,13 @@ async def broadcast_signal(signal: dict):
         except Exception as e:
             logging.error(f"{chat_id} mesaj gönderme hatası: {e}")
 
-# 7. Komutlar
+# Komutlar
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     CONFIG['chat_ids'].add(chat_id)
     await context.bot.send_message(
         chat_id=chat_id,
-        text="✅ **Gate.io Trading Bot Aktif**\n"
+        text="✅ Gate.io Trading Bot Aktif\n"
              "Sinyaller burada görünecek.\n"
              "Komutlar:\n"
              "/stop - Botu durdur\n"
@@ -217,20 +213,20 @@ async def show_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text="ℹ️ Aktif sinyal bulunmuyor"
         )
         return
-    
+
     response = ["📊 **Aktif Sinyaller**"]
     for signal in CONFIG['signals'].values():
         response.append(
             f"• {signal['symbol']} - {signal['direction']} "
             f"(Giriş: {signal['entry']:.4f})"
         )
-    
+
     await context.bot.send_message(
         chat_id=update.effective_chat.id,
         text="\n".join(response)
     )
 
-# 8. Ana Döngü
+# Ana Döngü
 async def main():
     # Komutları kaydet
     application.add_handler(CommandHandler("start", start))
@@ -248,7 +244,7 @@ async def main():
         symbol for symbol, market in markets.items() 
         if market['type'] == 'swap' and market['active']
     ]
-    logging.info(f"{len(CONFIG['SYMBOLS'])} adet sembol yüklendi")  # Düzeltildi
+    logging.info(f"{len(CONFIG['SYMBOLS'])} adet sembol yüklendi")
 
     # Sinyal üretim döngüsü
     while CONFIG['running']:
