@@ -1,6 +1,3 @@
-# Yerel makinede bir klasör aç
-cd algdn46
-
 # Repoyu klonla
 git clone https://github.com/Algdn46/algdn46.git .
 
