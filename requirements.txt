@@ -7,3 +7,5 @@ python-telegram-bot
 python-dotenv
 apscheduler
 nest_asyncio
+python-telegram-bot==13.7
+nest_asyncio
