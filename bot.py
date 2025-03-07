@@ -4,15 +4,22 @@ import numpy as np
 import asyncio
 import logging
 import nest_asyncio
-from datetime import datetime
+import sqlite3
+from datetime import datetime, timedelta
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import StandardScaler
+from sklearn.pipeline import Pipeline
 from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
-import os
-from dotenv import load_dotenv
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
+from sklearn.model_selection import TimeSeriesSplit, RandomizedSearchCV
+from scipy.stats import randint
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from dotenv import load_dotenv
+import os
+import joblib
+import talib
 
 # Async sorunları için
 nest_asyncio.apply()
@@ -21,295 +28,256 @@ nest_asyncio.apply()
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[logging.FileHandler('bot.log'),
-              logging.StreamHandler()])
+    handlers=[logging.FileHandler('ai_trading.log'), logging.StreamHandler()]
+)
 
 # Çevresel Değişkenler
 load_dotenv('gateio.env')
 
+# Veritabanı Bağlantısı
+conn = sqlite3.connect('trading_data.db')
+c = conn.cursor()
 
-# Exchange ve Bot Kurulumu
-def initialize_exchange():
-    return ccxt.binance({
-        'apiKey': os.getenv('BINANCE_API_KEY'),
-        'secret': os.getenv('BINANCE_SECRET_KEY'),
-        'enableRateLimit': True,
-        'options': {
-            'defaultType': 'swap'
-        },
-    })
-
-
-# Telegram Bot
-TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
-
-if not TELEGRAM_TOKEN or not os.getenv('BINANCE_API_KEY') or not os.getenv(
-        'BINANCE_SECRET_KEY'):
-    raise ValueError("API anahtarları veya Telegram token eksik!")
-
-application = Application.builder().token(TELEGRAM_TOKEN).build()
-exchange = initialize_exchange()
+# Veritabanı Tablosu Oluşturma
+c.execute('''CREATE TABLE IF NOT EXISTS market_data
+             (symbol TEXT, timeframe TEXT, timestamp DATETIME,
+              open REAL, high REAL, low REAL, close REAL, volume REAL,
+              ema9 REAL, ema21 REAL, rsi REAL, atr REAL, PRIMARY KEY (symbol, timeframe, timestamp))''')
+conn.commit()
 
 # Global Ayarlar
 CONFIG = {
     'SYMBOLS': [],
-    'running': False,  # Başlangıçta bot çalışmıyor
+    'running': False,
     'LEVERAGE': 10,
     'RISK_PER_TRADE': 0.02,
-    'TIMEFRAMES': ['5m', '15m', '1h'],
-    'LSTM_LOOKBACK': 50,
-    'EMA_PERIODS': (9, 21),
-    'RSI_PERIOD': 14,
-    'ATR_PERIOD': 14,
+    'TIMEFRAMES': ['5m', '15m', '1h', '4h'],
+    'LOOKBACK_WINDOW': 1000,
+    'MODELS': {
+        'LSTM': None,
+        'RF': None,
+        'ENSEMBLE_WEIGHTS': {'LSTM': 0.6, 'RF': 0.4}
+    },
+    'SCALER': StandardScaler(),
     'chat_ids': set(),
-    'signals': {},
-    'positions': {},
-    'model': None
+    'last_signals': {},
+    'position_size': 0.0
 }
 
-
-# LSTM Modeli
-def create_lstm_model():
-    model = Sequential([
-        LSTM(64,
-             return_sequences=True,
-             input_shape=(CONFIG['LSTM_LOOKBACK'], 3)),
-        Dropout(0.3),
-        LSTM(32),
-        Dropout(0.3),
-        Dense(1)
-    ])
-    model.compile(optimizer='adam', loss='mse')
-    return model
-
-
-CONFIG['model'] = create_lstm_model()
-
-
-# Veri Yönetimi
-async def fetch_ohlcv(symbol: str, timeframe: str, retries=3):
-    for attempt in range(retries):
+# 1. Gelişmiş Veri Yönetimi Sistemi
+class DataManager:
+    @staticmethod
+    async def fetch_and_store(symbol: str, timeframe: str):
         try:
-            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
-            df = pd.DataFrame(ohlcv,
-                              columns=[
-                                  'timestamp', 'open', 'high', 'low', 'close',
-                                  'volume'
-                              ])
+            exchange = ccxt.binance({
+                'enableRateLimit': True,
+                'options': {'defaultType': 'future'}
+            })
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            return df
+            
+            # Teknik Göstergeler
+            df['ema9'] = talib.EMA(df['close'], timeperiod=9)
+            df['ema21'] = talib.EMA(df['close'], timeperiod=21)
+            df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+            df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+            
+            # Veritabanına Kaydet
+            df.to_sql('market_data', conn, if_exists='append', index=False)
+            logging.info(f"{symbol} {timeframe} verisi güncellendi")
+            
+            return df.dropna()
         except Exception as e:
-            logging.error(
-                f"{symbol} {timeframe} veri çekme hatası (deneme {attempt+1}/{retries}): {e}"
-            )
-            if attempt == retries - 1:
-                return None
-            await asyncio.sleep(2**attempt)
+            logging.error(f"Veri çekme hatası: {str(e)}")
+            return None
 
-
-def calculate_indicators(df: pd.DataFrame):
+# 2. Çoklu Zaman Dilimi Özellik Mühendisliği
+def create_multiframe_features(symbol: str):
     try:
-        df['EMA9'] = df['close'].ewm(span=CONFIG['EMA_PERIODS'][0],
-                                     adjust=False).mean()
-        df['EMA21'] = df['close'].ewm(span=CONFIG['EMA_PERIODS'][1],
-                                      adjust=False).mean()
-        delta = df['close'].diff()
-        gain = delta.where(delta > 0, 0)
-        loss = -delta.where(delta < 0, 0)
-        avg_gain = gain.rolling(window=CONFIG['RSI_PERIOD']).mean()
-        avg_loss = loss.rolling(window=CONFIG['RSI_PERIOD']).mean()
-        rs = avg_gain / avg_loss
-        df['RSI'] = 100 - (100 / (1 + rs))
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(window=CONFIG['ATR_PERIOD']).mean()
-        return df.dropna()
-    except Exception as e:
-        logging.error(f"Gösterge hesaplama hatası: {e}")
-        return df
-
-
-# Sinyal Üretimi
-async def generate_signal(symbol: str):
-    try:
-        tf_data = {}
+        features = []
         for timeframe in CONFIG['TIMEFRAMES']:
-            df = await fetch_ohlcv(symbol, timeframe)
-            if df is not None:
-                tf_data[timeframe] = calculate_indicators(df)
+            df = pd.read_sql(f"SELECT * FROM market_data WHERE symbol='{symbol}' AND timeframe='{timeframe}' ORDER BY timestamp DESC LIMIT 500", conn)
+            if len(df) < 100:
+                continue
+                
+            # Hesaplanmış Özellikler
+            df['returns'] = df['close'].pct_change()
+            df['volatility'] = df['returns'].rolling(20).std()
+            df['volume_change'] = df['volume'].pct_change()
+            
+            # Zaman Serisi Özellikleri
+            for window in [5, 20, 50]:
+                df[f'ma_{window}'] = df['close'].rolling(window).mean()
+                df[f'ma_ratio_{window}'] = df['close'] / df[f'ma_{window}']
+                
+            features.append(df.add_prefix(f'{timeframe}_'))
+            
+        return pd.concat(features, axis=1).ffill().dropna()
+    except Exception as e:
+        logging.error(f"Özellik oluşturma hatası: {str(e)}")
+        return None
 
-        df_5m = tf_data.get('5m')
-        df_1h = tf_data.get('1h')
-        if df_5m is None or df_1h is None or len(df_5m) < 10 or len(
-                df_1h) < 10:
-            logging.warning(f"{symbol} için yeterli veri yok.")
-            return
+# 3. Ensemble AI Model Sistemi
+class AIModels:
+    @staticmethod
+    def train_lstm_model(X, y):
+        model = Sequential([
+            Bidirectional(LSTM(128, return_sequences=True), 
+            Dropout(0.4),
+            Bidirectional(LSTM(64)),
+            Dropout(0.3),
+            Dense(32, activation='relu'),
+            Dense(1, activation='sigmoid')
+        ])
+        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        model.fit(X, y, epochs=50, batch_size=32, validation_split=0.2, verbose=0)
+        return model
 
-        current_price = df_5m['close'].iloc[-1]
-        last_ema9 = df_5m['EMA9'].iloc[-2]
-        last_ema21 = df_5m['EMA21'].iloc[-2]
-        current_ema9 = df_5m['EMA9'].iloc[-1]
-        current_ema21 = df_5m['EMA21'].iloc[-1]
+    @staticmethod
+    def train_random_forest(X, y):
+        pipeline = Pipeline([
+            ('scaler', StandardScaler()),
+            ('clf', RandomForestClassifier(n_estimators=200, class_weight='balanced'))
+        ])
+        
+        param_dist = {
+            'clf__max_depth': randint(3, 10),
+            'clf__min_samples_split': randint(2, 10)
+        }
+        
+        search = RandomizedSearchCV(pipeline, param_dist, n_iter=5, cv=3, scoring='accuracy')
+        search.fit(X, y)
+        return search.best_estimator_
 
-        long_signal = (last_ema9 < last_ema21) and (
-            current_ema9 > current_ema21) and (df_1h['EMA9'].iloc[-1]
-                                               > df_1h['EMA21'].iloc[-1]) and (
-                                                   df_5m['RSI'].iloc[-1] < 70)
-        short_signal = (last_ema9 > last_ema21) and (
-            current_ema9 < current_ema21) and (df_1h['EMA9'].iloc[-1]
-                                               < df_1h['EMA21'].iloc[-1]) and (
-                                                   df_5m['RSI'].iloc[-1] > 30)
+# 4. Otomatik Model Güncelleme Sistemi
+async def periodic_training():
+    logging.info("Periyodik model eğitimi başlatılıyor...")
+    symbols = pd.read_sql("SELECT DISTINCT symbol FROM market_data", conn)['symbol'].tolist()
+    
+    for symbol in symbols[:10]:  # İlk 10 sembol için
+        try:
+            X = create_multiframe_features(symbol)
+            y = (X.filter(regex='close').iloc[:,0].pct_change().shift(-1) > 0).astype(int)
+            
+            # LSTM için veri hazırlığı
+            seq_length = 60
+            X_lstm = np.array([X.values[i-seq_length:i] for i in range(seq_length, len(X))])
+            y_lstm = y[seq_length:]
+            
+            # Model Eğitimi
+            lstm_model = AIModels.train_lstm_model(X_lstm, y_lstm)
+            rf_model = AIModels.train_random_forest(X, y)
+            
+            # Modelleri Kaydet
+            lstm_model.save(f'models/{symbol}_lstm.h5')
+            joblib.dump(rf_model, f'models/{symbol}_rf.pkl')
+            
+            logging.info(f"{symbol} modelleri güncellendi")
+        except Exception as e:
+            logging.error(f"{symbol} model güncelleme hatası: {str(e)}")
 
+# 5. Gelişmiş Sinyal Doğrulama
+async def validate_signal(symbol: str, direction: str) -> bool:
+    try:
+        # 1. Tarihsel Başarı Oranı Kontrolü
+        historical = pd.read_sql(f"""SELECT direction, outcome FROM signals 
+                                   WHERE symbol='{symbol}' AND direction='{direction}'
+                                   ORDER BY timestamp DESC LIMIT 100""", conn)
+        if len(historical) > 20 and historical['outcome'].mean() < 0.55:
+            return False
+            
+        # 2. Ensemble Model Tahmini
+        X = create_multiframe_features(symbol)
+        latest_data = X.iloc[-1:].values.reshape(1, -1)
+        
+        # LSTM Tahmini
+        lstm_model = tf.keras.models.load_model(f'models/{symbol}_lstm.h5')
+        lstm_input = X.iloc[-60:].values.reshape(1, 60, -1)
+        lstm_prob = lstm_model.predict(lstm_input)[0][0]
+        
+        # RF Tahmini
+        rf_model = joblib.load(f'models/{symbol}_rf.pkl')
+        rf_prob = rf_model.predict_proba(latest_data)[0][1]
+        
+        # Kombine Tahmin
+        combined_prob = (CONFIG['MODELS']['ENSEMBLE_WEIGHTS']['LSTM'] * lstm_prob +
+                        CONFIG['MODELS']['ENSEMBLE_WEIGHTS']['RF'] * rf_prob)
+                        
+        return combined_prob > 0.65
+    except Exception as e:
+        logging.error(f"Doğrulama hatası: {str(e)}")
+        return False
+
+# 6. Güncellenmiş Sinyal Üretim Sistemi
+async def generate_ai_signal(symbol: str):
+    try:
+        # Verileri Güncelle
+        await DataManager.fetch_and_store(symbol, '5m')
+        await DataManager.fetch_and_store(symbol, '1h')
+        
+        # Temel Sinyal Üretimi
+        df_5m = pd.read_sql(f"SELECT * FROM market_data WHERE symbol='{symbol}' AND timeframe='5m' ORDER BY timestamp DESC LIMIT 100", conn)
+        df_1h = pd.read_sql(f"SELECT * FROM market_data WHERE symbol='{symbol}' AND timeframe='1h' ORDER BY timestamp DESC LIMIT 100", conn)
+        
+        long_signal = (df_5m['ema9'].iloc[-2] < df_5m['ema21'].iloc[-2] and
+                      df_5m['ema9'].iloc[-1] > df_5m['ema21'].iloc[-1] and
+                      df_1h['rsi'].iloc[-1] < 65)
+        
+        short_signal = (df_5m['ema9'].iloc[-2] > df_5m['ema21'].iloc[-2] and
+                       df_5m['ema9'].iloc[-1] < df_5m['ema21'].iloc[-1] and
+                       df_1h['rsi'].iloc[-1] > 35)
+        
         if not (long_signal or short_signal):
             return
-
-        atr = df_5m['ATR'].iloc[-1]
-        entry_price = current_price
-        tp = entry_price + (2 * atr) if long_signal else entry_price - (2 *
-                                                                        atr)
-        sl = entry_price - atr if long_signal else entry_price + atr
-
+            
+        direction = 'LONG' if long_signal else 'SHORT'
+        
+        # AI Doğrulaması
+        if not await validate_signal(symbol, direction):
+            logging.info(f"{symbol} AI tarafından onaylanmadı")
+            return
+            
+        # Risk Yönetimi
         balance = exchange.fetch_balance()['USDT']['free']
+        atr = df_5m['atr'].iloc[-1]
+        entry_price = df_5m['close'].iloc[-1]
         risk_amount = balance * CONFIG['RISK_PER_TRADE']
-        position_size = risk_amount / abs(entry_price - sl)
-
+        position_size = risk_amount / (atr * 1.5)
+        
         signal = {
             'symbol': symbol,
-            'direction': 'LONG' if long_signal else 'SHORT',
+            'direction': direction,
             'entry': entry_price,
-            'tp': tp,
-            'sl': sl,
+            'tp': entry_price + (2 * atr) if direction == 'LONG' else entry_price - (2 * atr),
+            'sl': entry_price - atr if direction == 'LONG' else entry_price + atr,
             'size': position_size,
+            'confidence': combined_prob,
             'timestamp': datetime.now().isoformat()
         }
-
-        CONFIG['signals'][symbol] = signal
-        logging.info(f"Yeni sinyal üretildi: {signal}")
+        
         await broadcast_signal(signal)
+        logging.info(f"AI Onaylı Sinyal: {signal}")
+        
     except Exception as e:
-        logging.error(f"{symbol} sinyal üretim hatası: {e}")
+        logging.error(f"Sinyal üretim hatası: {str(e)}")
 
-
-# Telegram Entegrasyonu
-async def broadcast_signal(signal: dict):
-    message = (f"🚨 Yeni Sinyal 🚨\n"
-               f"• Sembol: {signal['symbol']}\n"
-               f"• Yön: {signal['direction']}\n"
-               f"• Giriş: {signal['entry']:.4f}\n"
-               f"• TP: {signal['tp']:.4f}\n"
-               f"• SL: {signal['sl']:.4f}\n"
-               f"• Boyut: {signal['size']:.2f} USDT")
-
-    for chat_id in CONFIG['chat_ids']:
-        try:
-            await application.bot.send_message(chat_id=chat_id,
-                                               text=message,
-                                               parse_mode='Markdown')
-        except Exception as e:
-            logging.error(f"{chat_id} mesaj gönderme hatası: {e}")
-
-
-# Komutlar
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    CONFIG['chat_ids'].add(chat_id)
-    await context.bot.send_message(chat_id=chat_id,
-                                   text="✅ Gate.io Trading Bot Aktif\n"
-                                   "Sinyaller burada görünecek.\n"
-                                   "Komutlar:\n"
-                                   "/signals - Sinyal üretimini başlat\n"
-                                   "/stop - Sinyal üretimini durdur\n"
-                                   "/unsubscribe - Bildirimleri kapat")
-
-
-async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CONFIG['running'] = False
-    await context.bot.send_message(chat_id=update.effective_chat.id,
-                                   text="🛑 Sinyal üretimi durduruldu.")
-
-
-async def show_signals(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id not in CONFIG['chat_ids']:
-        CONFIG['chat_ids'].add(chat_id)
-
-    if not CONFIG['running']:
-        CONFIG['running'] = True
-        await context.bot.send_message(
-            chat_id=chat_id,
-            text=
-            "🔄 Sinyal üretimi başlatıldı. Yeni sinyaller burada görünecek.\n"
-            "Durdurmak için /stop komutunu kullanın.")
-        scheduler = AsyncIOScheduler()
-        scheduler.add_job(run_signal_generation, 'interval', seconds=60)
-        scheduler.start()
-    else:
-        if not CONFIG['signals']:
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text="ℹ️ Henüz aktif sinyal bulunmuyor. Lütfen bekleyin...")
-            return
-
-        response = ["📊 *Aktif Sinyaller*"]
-        for signal in CONFIG['signals'].values():
-            response.append(
-                f"• {signal['symbol']} - {signal['direction']} "
-                f"(Giriş: {signal['entry']:.4f}, TP: {signal['tp']:.4f}, SL: {signal['sl']:.4f})"
-            )
-
-        await context.bot.send_message(chat_id=chat_id,
-                                       text="\n".join(response),
-                                       parse_mode='Markdown')
-
-
-async def unsubscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    chat_id = update.effective_chat.id
-    if chat_id in CONFIG['chat_ids']:
-        CONFIG['chat_ids'].remove(chat_id)
-        await context.bot.send_message(chat_id=chat_id,
-                                       text="✅ Sinyal bildirimleri kapatıldı.")
-    else:
-        await context.bot.send_message(chat_id=chat_id,
-                                       text="ℹ️ Zaten bildirim almıyorsunuz.")
-
-
-# Sinyal Üretim Döngüsü
-async def run_signal_generation():
-    if not CONFIG['running']:
-        return
-    for symbol in CONFIG['SYMBOLS'][:20]:  # İlk 20 sembolü kontrol et
-        await generate_signal(symbol)
-
-
-# Ana Döngü
-async def main():
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("stop", stop))
-    application.add_handler(CommandHandler("signals", show_signals))
-    application.add_handler(CommandHandler("unsubscribe", unsubscribe))
-
-    markets = exchange.load_markets()
-    CONFIG['SYMBOLS'] = [
-        symbol for symbol, market in markets.items()
-        if market['type'] == 'swap' and market['active']
-        and market['quote'] == 'USDT'
-    ]
-    logging.info(f"{len(CONFIG['SYMBOLS'])} adet sembol yüklendi")
-
-    await application.initialize()
-    await application.start()
-    await application.updater.start_polling()
-
-    try:
-        await asyncio.Event().wait()  # Botun çalışmasını sürdürmek için
-    finally:
-        await application.updater.stop()
-        await application.stop()
-
-
+# 7. Render için Gerekli Ayarlar
 if __name__ == '__main__':
-    asyncio.run(main())
-
+    # Model klasörünü oluştur
+    os.makedirs('models', exist_ok=True)
     
+    # Başlangıçta model eğitimi
+    asyncio.run(periodic_training())
+    
+    # Zamanlayıcıları Ayarla
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(periodic_training, 'interval', hours=12)
+    scheduler.add_job(run_signal_generation, 'interval', minutes=5)
+    scheduler.start()
+    
+    # Telegram Botu Başlat
+    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("signals", show_signals))
+    application.run_polling()
