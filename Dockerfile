@@ -1,22 +1,23 @@
 FROM python:3.10-slim
 
-  WORKDIR /app
+WORKDIR /app
 
-  # Sistem bağımlılıklarını kur
-  RUN apt-get update && apt-get install -y \
-      build-essential \
-      wget \
-      && rm -rf /var/lib/apt/lists/*
+# Gerekli sistem bağımlılıklarını kur
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
 
-  # TA-Lib kurulumu
-  RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
-      && tar -xzf ta-lib-0.4.0-src.tar.gz \
-      && cd ta-lib/ \
-      && ./configure --prefix=/usr \
-      && make \
-      && make install
+# TA-Lib kaynak kodunu indir ve derle
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
+    && tar -xzf ta-lib-0.4.0-src.tar.gz \
+    && cd ta-lib/ \
+    && ./configure --prefix=/usr \
+    && make \
+    && make install
 
-  COPY . .
-  RUN pip install --no-cache-dir -r requirements.txt
+# Proje dosyalarını kopyala ve bağımlılıkları kur
+COPY . .
+RUN pip install --no-cache-dir -r requirements.txt
 
-  CMD ["python", "main.py"]
+CMD ["python", "main.py"]
