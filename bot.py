@@ -30,9 +30,9 @@ load_dotenv('gateio.env')
 
 # Exchange ve Bot Kurulumu
 def initialize_exchange():
-    return ccxt.gate({
-        'apiKey': os.getenv('GATEIO_API_KEY'),
-        'secret': os.getenv('GATEIO_SECRET_KEY'),
+    return ccxt.binance({
+        'apiKey': os.getenv('BINANCE_API_KEY'),
+        'secret': os.getenv('BINANCE_SECRET_KEY'),
         'enableRateLimit': True,
         'options': {
             'defaultType': 'swap'
@@ -43,8 +43,8 @@ def initialize_exchange():
 # Telegram Bot
 TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
 
-if not TELEGRAM_TOKEN or not os.getenv('GATEIO_API_KEY') or not os.getenv(
-        'GATEIO_SECRET_KEY'):
+if not TELEGRAM_TOKEN or not os.getenv('BINANCE_API_KEY') or not os.getenv(
+        'BINANCE_SECRET_KEY'):
     raise ValueError("API anahtarları veya Telegram token eksik!")
 
 application = Application.builder().token(TELEGRAM_TOKEN).build()
