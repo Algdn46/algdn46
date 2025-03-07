@@ -8,20 +8,22 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# TA-Lib'i indir ve derle
+# TA-Lib kurulumu
 RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
     && tar -xzf ta-lib-0.4.0-src.tar.gz \
     && cd ta-lib \
     && ./configure --prefix=/usr \
     && make \
-    && make install \
-    && cd .. \
-    && rm -rf ta-lib*
+    && make install
 
-# Uygulama dosyalarını kopyala
-COPY . .
+# Gereksiz dosyaları temizle
+RUN rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
 # Bağımlılıkları kur
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+# Uygulamayı kopyala
+COPY . .
 
 CMD ["python", "main.py"]
