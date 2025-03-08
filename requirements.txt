@@ -1,6 +1,6 @@
 tqdm
 TA-Lib==0.4.24
-ccxt==4.0.0
+ccxt==4.0.3  # 4.0.0 mevcut değil, en yakın mevcut sürüm olarak 4.0.3 kullanıldı
 python-telegram-bot==20.0
 tensorflow-cpu==2.12.0
 scikit-learn==1.2.2
