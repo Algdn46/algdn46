@@ -21,6 +21,9 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
+# Pip'i güncelle
+RUN pip install --upgrade pip
+
 # Python bağımlılıklarını yükle
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
