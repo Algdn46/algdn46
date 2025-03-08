@@ -2,12 +2,6 @@ FROM python:3.10-slim
 
 WORKDIR /app
 
-# Sistem bağımlılıklarını kur
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    wget \
-    && rm -rf /var/lib/apt/lists/*
-
 # TA-Lib kurulumu
 RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
     && tar -xzf ta-lib-0.4.0-src.tar.gz \
@@ -19,11 +13,17 @@ RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
 # Gereksiz dosyaları temizle
 RUN rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-# Bağımlılıkları kur
+
+# Gerekli derleme araçlarını yükle
+RUN apt-get update && apt-get install -y gcc g++ libffi-dev
+
+# NumPy'yi eski bir sürümle kur
+RUN pip install numpy==1.26.4
+
+# requirements.txt dosyasını kopyala ve bağımlılıkları kur
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Uygulamayı kopyala
+# Uygulama kodlarını kopyala
 COPY . .
-
 CMD ["python", "main.py"]
