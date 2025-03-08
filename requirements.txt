@@ -1,11 +1,11 @@
-ccxt==4.2.85
-pandas==2.2.1
-numpy==1.26.4
-nest_asyncio==1.6.0
-python-telegram-bot==13.7
-scikit-learn==1.4.1.post1
-tensorflow==2.15.0
-apscheduler==3.10.4
-python-dotenv==1.0.1
-joblib==1.4.0
-ta-lib==0.4.28
+ccxt
+pandas
+numpy
+nest_asyncio
+python-telegram-bot==13.7  # Bu sürüm kodda sabit, değiştirmedim
+scikit-learn
+tensorflow
+apscheduler
+python-dotenv
+joblib
+ta-lib
