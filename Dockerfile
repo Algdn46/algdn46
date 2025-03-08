@@ -1,6 +1,7 @@
+# Python 3.11 imajını kullan
 FROM python:3.11
 
-# Sistem bağımlılıklarını kur
+# Gerekli sistem bağımlılıklarını yükle
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -8,29 +9,31 @@ RUN apt-get update && apt-get install -y \
     make \
     python3-dev \
     build-essential \
+    libatlas-base-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# TA-Lib C kütüphanesini kur
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+# TA-Lib C kütüphanesini indir ve kur
+RUN wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
-    make && \
+    make -j$(nproc) && \
     make install && \
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-ENV LD_LIBRARY_PATH=/usr/lib:$LD_LIBRARY_PATH
+# TA-Lib için ortam değişkeni ayarla
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
-# Bağımlılıkları kur
+# Python bağımlılıklarını yükle
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Uygulama kodlarını kopyala
 COPY . .
 
-# Kalıcı disk için dizin oluştur
+# Model dosyaları için dizin oluştur
 RUN mkdir -p /data/models
 
-# Uygulamayı çalıştır
+# Uygulamayı başlat
 CMD ["python", "bot.py"]
