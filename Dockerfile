@@ -8,8 +8,14 @@ RUN apt-get update && apt-get install -y \
     python3-dev \
     build-essential \
     libatlas-base-dev \
+    libffi-dev \
+    libssl-dev \
+    libbz2-dev \
+    libreadline-dev \
+    libsqlite3-dev \
     wget \
     curl \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
 # TA-Lib C kütüphanesini kur
@@ -17,16 +23,13 @@ RUN curl -L -o ta-lib-0.4.0-src.tar.gz http://prdownloads.sourceforge.net/ta-lib
     tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
-    make -j$(nproc) && \
+    make -j$(nproc) || make || make -j1 && \
     make install && \
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
 # Kütüphane yollarını güncelle
 ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
-ENV TA_LIBRARY_PATH=/usr/local/lib
-ENV C_INCLUDE_PATH=/usr/local/include
-ENV CPLUS_INCLUDE_PATH=/usr/local/include
 
 # TA-Lib'in çalıştığını kontrol et
 RUN ldconfig -p | grep ta_lib
@@ -46,3 +49,4 @@ RUN mkdir -p /data/models
 
 # Uygulamayı başlat
 CMD ["python", "bot.py"]
+
