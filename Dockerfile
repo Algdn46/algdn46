@@ -25,6 +25,9 @@ RUN wget -q http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz &&
 # TA-Lib için ortam değişkeni ayarla
 ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
 
+# TA-Lib Python paketini yükle
+RUN pip install --no-cache-dir TA-Lib==0.6.3
+
 # Python bağımlılıklarını yükle
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
