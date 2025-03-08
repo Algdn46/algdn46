@@ -31,4 +31,4 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Uygulamayı çalıştır
-CMD ["python", "main.py"]  # bot.py
+CMD ["python", "bot.py"]  
