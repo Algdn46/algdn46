@@ -1,6 +1,6 @@
 FROM python:3.9-slim
 RUN pip install TA-Lib==0.4.28
-
+RUN pip install --no-cache-dir -r requirements.txt --verbose
 WORKDIR /app
 
 # Sistem bağımlılıklarını yükle (TA-Lib için gerekli)
