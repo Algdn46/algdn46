@@ -1,9 +1,9 @@
 FROM python:3.9-slim
-RUN pip install TA-Lib==0.4.28
-RUN pip install --no-cache-dir -r requirements.txt --verbose
+
+# Set working directory
 WORKDIR /app
-RUN pip install -r requirements.txt
-# Sistem bağımlılıklarını yükle (TA-Lib için gerekli)
+
+# Install system dependencies (required for TA-Lib compilation)
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
@@ -12,26 +12,31 @@ RUN apt-get update && apt-get install -y \
     wget \
     && rm -rf /var/lib/apt/lists/*
 
-# TA-Lib'i derle ve kur
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.28-src.tar.gz && \
-    tar -xzf ta-lib-0.4.28-src.tar.gz && \
+# Compile and install TA-Lib C library from source
+RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
+    tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
     cd .. && \
-    rm -rf ta-lib ta-lib-0.4.28-src.tar.gz
+    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
-# Pip'i güncelle
+# Update pip
 RUN pip install --upgrade pip
 
-# Python bağımlılıklarını yükle
+# Install TA-Lib Python package (after C library is installed)
+RUN pip install TA-Lib==0.4.28
+
+# Install Python dependencies from requirements.txt
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Uygulama dosyalarını kopyala
+# Copy application files
 COPY . .
 
+# Set environment variable
 ENV PYTHONUNBUFFERED=1
 
+# Run the application
 CMD ["python", "bot.py"]
