@@ -1,34 +1,40 @@
-# Python 3.11 temel imajını kullan
+# Python 3.11 tabanlı Docker imajı
 FROM python:3.11
 
-# Gerekli bağımlılıkları yükle
-# TA-Lib derlemesi için libpthread ve diğer geliştirme araçlarını ekledim
+# Gerekli sistem bağımlılıklarını yükle
 RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     python3-dev \
     build-essential \
     libatlas-base-dev \
-    libpthread-stubs0-dev \
+    wget \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
-# TA-Lib C kütüphanesini elle indirip kur
-WORKDIR /tmp
+# TA-Lib C kütüphanesini kur
 RUN curl -L -o ta-lib-0.4.0-src.tar.gz http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
     tar -xzf ta-lib-0.4.0-src.tar.gz && \
     cd ta-lib && \
     ./configure --prefix=/usr && \
-    # Paralel inşa yerine tek thread ile inşa et (sorunları önlemek için)
-    make && \
+    make -j$(nproc) && \
     make install && \
     cd .. && \
     rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
 
+# Kütüphane yollarını güncelle
+ENV LD_LIBRARY_PATH=/usr/local/lib:$LD_LIBRARY_PATH
+ENV TA_LIBRARY_PATH=/usr/local/lib
+ENV C_INCLUDE_PATH=/usr/local/include
+ENV CPLUS_INCLUDE_PATH=/usr/local/include
+
+# TA-Lib'in çalıştığını kontrol et
+RUN ldconfig -p | grep ta_lib
+
 # TA-Lib Python paketini yükle
-# Not: TA-Lib 0.6.3 sürümü C kütüphanesine bağlı, bu yüzden önce C kütüphanesi kurulmalı
 RUN pip install --no-cache-dir TA-Lib==0.6.3
 
-# Python bağımlılıklarını yükle
+# Diğer bağımlılıkları yükle
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
