@@ -1,32 +1,24 @@
-FROM python:3.10
+FROM python:3.7
 
-# Çalışma dizinini ayarla
-WORKDIR /app
-
-# Gerekli araçları ve ta-lib'i kaynaktan derle
-RUN apt-get update && apt-get install -y --no-install-recommends \
+# Gerekli paketleri yükle (Debian tabanlı sistemler için)
+RUN apt-get update && apt-get install -y \
     build-essential \
-    gcc \
-    make \
     wget \
-    && wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
-    && tar -xzf ta-lib-0.4.0-src.tar.gz \
-    && cd ta-lib/ \
-    && ./configure --prefix=/usr \
-    && make \
-    && make install \
-    && cd .. \
-    && rm -rf ta-lib-0.4.0-src.tar.gz ta-lib \
-    && pip install --no-cache-dir ta-lib \
-    && apt-get purge --auto-remove -y wget \
-    && apt-get clean \
+    curl \
+    git \
+    cmake \
+    libta-lib0 \
+    libta-lib-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Uygulama dosyalarını kopyala ve bağımlılıkları kur
+# Python bağımlılıklarını yükle
+WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Ana uygulamayı kopyala
 COPY . .
 
-# Uygulamayı çalıştır
-CMD ["python", "main.py"]
+# Çalıştırma komutu
+CMD ["python", "bot.py"]
+
