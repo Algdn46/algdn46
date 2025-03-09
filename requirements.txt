@@ -1,15 +1,24 @@
-# Temel kütüphaneler
-python-telegram-bot==21.4
-ccxt==4.2.85
-pandas==2.2.1
-numpy==1.24.4
-ta-lib==0.4.28
-tensorflow==2.15.0
-scikit-learn==1.4.1.post1
-joblib==1.3.2
-apscheduler==3.10.4
-nest_asyncio==1.6.0
-python-dotenv==1.0.1
+# Core
+numpy==1.23.5
+pandas==1.5.3
+python-dotenv==1.0.0
 
-# Logging ve yardımcı kütüphaneler
-sqlite3  # Python ile yerleşik gelir, manuel eklenmez
+# Trading
+ccxt==4.2.43
+talib==0.4.24
+
+# Machine Learning
+scikit-learn==1.2.2
+tensorflow==2.10.1
+keras==2.10.0
+joblib==1.2.0
+
+# Async & Utilities
+nest-asyncio==1.5.8
+apscheduler==3.10.1
+
+# Telegram
+python-telegram-bot==20.3
+
+# Database
+sqlalchemy==2.0.19
