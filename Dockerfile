@@ -2,11 +2,12 @@
 FROM python:3.9.18-slim-bullseye
 
 # Set environment variables
-ENV PYTHONUNBUFFERED 1
-ENV PIP_NO_CACHE_DIR 1
+ENV PYTHONUNBUFFERED=1 \
+    PIP_NO_CACHE_DIR=1 \
+    DEBIAN_FRONTEND=noninteractive
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     wget \
     libgomp1 \
@@ -20,21 +21,23 @@ RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0/ta-lib-0.
     make && \
     make install && \
     cd .. && \
-    rm -rf ta-lib-0.4.0-rc1.tar.gz
+    rm -rf ta-lib-0.4.0-rc1.tar.gz ta-lib
 
 # Set working directory
 WORKDIR /app
 
-# Install Python dependencies
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
+
+# Install Python dependencies
 RUN pip install --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
 # Copy application files
 COPY . .
 
-# Create data volume
-RUN mkdir /data && chmod 755 /data
+# Create data volume with proper permissions
+RUN mkdir -p /data && chmod 755 /data
 
-# Run application
-CMD ["python", "-
+# Set entrypoint
+CMD ["python", "bot.py"]
