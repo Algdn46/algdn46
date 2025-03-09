@@ -1,4 +1,4 @@
-FROM python:3.7
+FROM python:3.8
 
 # Gerekli paketleri yükle (Debian tabanlı sistemler için)
 RUN apt-get update && apt-get install -y \
@@ -20,5 +20,5 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
 # Çalıştırma komutu
-CMD ["python", "bot.py"]
+CMD ["python", "main.py"]
 
