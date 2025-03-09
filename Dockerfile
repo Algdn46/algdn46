@@ -1,41 +1,40 @@
-# Temel imaj olarak Python 3.10 kullanıyoruz
-FROM python:3.10-slim
+# Base image
+FROM python:3.9.18-slim-bullseye
 
-# Çalışma dizinini ayarla
-WORKDIR /app
+# Set environment variables
+ENV PYTHONUNBUFFERED 1
+ENV PIP_NO_CACHE_DIR 1
 
-# Sistem bağımlılıklarını kur (TA-Lib ve diğer gerekli araçlar)
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     build-essential \
     wget \
-    libatlas-base-dev \
-    gfortran \
+    libgomp1 \
     && rm -rf /var/lib/apt/lists/*
 
-# TA-Lib C kütüphanesini indir ve kur
-RUN wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz && \
-    tar -xzf ta-lib-0.4.0-src.tar.gz && \
-    cd ta-lib && \
+# Install TA-Lib
+RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0/ta-lib-0.4.0-rc1.tar.gz && \
+    tar -xzf ta-lib-0.4.0-rc1.tar.gz && \
+    cd ta-lib/ && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
     cd .. && \
-    rm -rf ta-lib ta-lib-0.4.0-src.tar.gz
+    rm -rf ta-lib-0.4.0-rc1.tar.gz
 
-# Gereksinim dosyasını kopyala
+# Set working directory
+WORKDIR /app
+
+# Install Python dependencies
 COPY requirements.txt .
+RUN pip install --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Python bağımlılıklarını kur
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Uygulama kodunu kopyala
+# Copy application files
 COPY . .
 
-# Veri ve model dosyaları için dizin oluştur
-RUN mkdir -p /data/models
+# Create data volume
+RUN mkdir /data && chmod 755 /data
 
-# Ortam değişkenlerini ayarla (isteğe bağlı)
-ENV PYTHONUNBUFFERED=1
-
-# Uygulamayı çalıştır
-CMD ["python", "main.py"]
+# Run application
+CMD ["python", "-
