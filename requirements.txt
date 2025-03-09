@@ -5,12 +5,12 @@ python-dotenv==1.0.0
 
 # Trading
 ccxt==4.2.43
-talib==0.4.24
+talib-binary==0.4.24  # Düzeltildi
 
 # Machine Learning
 scikit-learn==1.2.2
-tensorflow==2.10.1
-keras==2.10.0
+tensorflow==2.13.0      # Güncellendi
+keras==2.13.1           # Güncellendi
 joblib==1.2.0
 
 # Async & Utilities
@@ -22,3 +22,6 @@ python-telegram-bot==20.3
 
 # Database
 sqlalchemy==2.0.19
+
+# Optimizasyon
+protobuf==3.20.3  # TensorFlow uyumluluğu için
