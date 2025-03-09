@@ -11,35 +11,37 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.pipeline import Pipeline
-from tensorflow.keras.models import Sequential
+from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Bidirectional
 from tensorflow.keras.callbacks import EarlyStopping
+from tensorflow.keras import optimizers
+from tensorflow import keras
+import tensorflow as tf
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from dotenv import load_dotenv
 import os
 import joblib
 import talib
-import tensorflow as tf
 from collections import deque
 
 # Async sorunları için
 nest_asyncio.apply()
 
-# Logging Ayarları
+# Logging Ayarları (Aynı)
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[logging.FileHandler('ai_trading.log'), logging.StreamHandler()]
 )
 
-# Çevresel Değişkenler
-load_dotenv('andirin.env')  # .env dosyası adı açıkça andirin.env olarak belirtildi
+# Çevresel Değişkenler (Aynı)
+load_dotenv('andirin.env')
 
-# Veritabanı Bağlantısı
+# Veritabanı Bağlantısı (Aynı)
 conn = sqlite3.connect('/data/trading_data.db', check_same_thread=False)
 c = conn.cursor()
 
-# Veritabanı Tabloları
+# Veritabanı Tabloları (Aynı)
 c.execute('''CREATE TABLE IF NOT EXISTS market_data
              (symbol TEXT, timeframe TEXT, timestamp DATETIME,
               open REAL, high REAL, low REAL, close REAL, volume REAL,
@@ -50,13 +52,13 @@ c.execute('''CREATE TABLE IF NOT EXISTS model_performance
               accuracy REAL, profit REAL)''')
 conn.commit()
 
-# Global Exchange Nesnesi
+# Global Exchange Nesnesi (Aynı)
 exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {'defaultType': 'future'}
 })
 
-# Tüm USDT Vadeli İşlem Çiftlerini Çekme
+# Tüm USDT Vadeli İşlem Çiftlerini Çekme (Aynı)
 def load_usdt_futures_symbols():
     try:
         markets = exchange.load_markets()
@@ -67,7 +69,7 @@ def load_usdt_futures_symbols():
         logging.error(f"Sembol yükleme hatası: {str(e)}")
         return ['BTC/USDT', 'ETH/USDT']
 
-# Global Ayarlar
+# Global Ayarlar (Aynı)
 CONFIG = {
     'SYMBOLS': load_usdt_futures_symbols(),
     'running': False,
@@ -83,7 +85,7 @@ CONFIG = {
     'MIN_ACCURACY': 0.6
 }
 
-# 1. Gelişmiş Veri Yönetimi Sistemi
+# 1. Gelişmiş Veri Yönetimi Sistemi (Aynı)
 class DataManager:
     @staticmethod
     async def fetch_and_store(symbol: str, timeframe: str):
@@ -104,7 +106,7 @@ class DataManager:
             logging.error(f"Veri çekme hatası: {str(e)}")
             return None
 
-# 2. Çoklu Zaman Dilimi Özellik Mühendisliği
+# 2. Çoklu Zaman Dilimi Özellik Mühendisliği (Aynı)
 def create_multiframe_features(symbol: str):
     try:
         features = []
@@ -128,7 +130,7 @@ def create_multiframe_features(symbol: str):
         logging.error(f"Özellik oluşturma hatası: {str(e)}")
         return None
 
-# 3. Kendi Kendine Öğrenen AI Model Sistemi
+# 3. Kendi Kendine Öğrenen AI Model Sistemi (Güncellendi)
 class AIModels:
     @staticmethod
     def build_lstm_model(input_shape):
@@ -140,7 +142,11 @@ class AIModels:
             Dense(32, activation='relu'),
             Dense(1, activation='sigmoid')
         ])
-        model.compile(optimizer='adam', loss='binary_crossentropy', metrics=['accuracy'])
+        model.compile(
+            optimizer=optimizers.Adam(learning_rate=0.001),
+            loss='binary_crossentropy',
+            metrics=['accuracy']
+        )
         return model
 
     @staticmethod
@@ -154,9 +160,10 @@ class AIModels:
     async def train_or_update_model(symbol: str, model_type: str, X, y):
         try:
             model_path = f'/data/models/{symbol.replace("/", "_")}_{model_type.lower()}.h5' if model_type == 'LSTM' else f'/data/models/{symbol.replace("/", "_")}_{model_type.lower()}.pkl'
+            
             if os.path.exists(model_path):
                 if model_type == 'LSTM':
-                    model = tf.keras.models.load_model(model_path)
+                    model = load_model(model_path)
                     model.fit(X, y, epochs=5, batch_size=32, verbose=0, callbacks=[EarlyStopping(patience=2)])
                 else:
                     model = joblib.load(model_path)
@@ -180,7 +187,7 @@ class AIModels:
             logging.error(f"{symbol} {model_type} eğitim hatası: {str(e)}")
             return None
 
-# 4. Otomatik Model Güncelleme ve Performans Takibi
+# 4. Otomatik Model Güncelleme ve Performans Takibi (Aynı)
 async def periodic_training():
     logging.info("Periyodik model eğitimi başlatılıyor...")
     for symbol in CONFIG['SYMBOLS'][:10]:
@@ -208,7 +215,7 @@ async def periodic_training():
         except Exception as e:
             logging.error(f"{symbol} model güncelleme hatası: {str(e)}")
 
-# 5. Gelişmiş Sinyal Doğrulama
+# 5. Gelişmiş Sinyal Doğrulama (Güncellendi)
 async def validate_signal(symbol: str, direction: str) -> bool:
     try:
         X = create_multiframe_features(symbol)
@@ -222,7 +229,7 @@ async def validate_signal(symbol: str, direction: str) -> bool:
             logging.info(f"{symbol} modelleri düşük doğruluk nedeniyle reddedildi")
             return False
         
-        lstm_model = tf.keras.models.load_model(f'/data/models/{symbol.replace("/", "_")}_lstm.h5')
+        lstm_model = load_model(f'/data/models/{symbol.replace("/", "_")}_lstm.h5')
         lstm_prob = lstm_model.predict(lstm_input, verbose=0)[0][0]
         
         rf_model = joblib.load(f'/data/models/{symbol.replace("/", "_")}_rf.pkl')
@@ -234,7 +241,7 @@ async def validate_signal(symbol: str, direction: str) -> bool:
         logging.error(f"Doğrulama hatası: {str(e)}")
         return False
 
-# 6. Güncellenmiş Sinyal Üretim Sistemi
+# 6. Güncellenmiş Sinyal Üretim Sistemi (Aynı)
 async def generate_ai_signal(symbol: str):
     if not CONFIG['running']:
         return
@@ -285,7 +292,7 @@ async def generate_ai_signal(symbol: str):
     except Exception as e:
         logging.error(f"Sinyal üretim hatası: {str(e)}")
 
-# 7. Telegram Komutları ve Yayın
+# 7. Telegram Komutları ve Yayın (Aynı)
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.message.chat_id
     CONFIG['chat_ids'].add(chat_id)
@@ -313,9 +320,9 @@ async def run_signal_generation():
         if CONFIG['running']:
             for symbol in CONFIG['SYMBOLS']:
                 await generate_ai_signal(symbol)
-        await asyncio.sleep(300)  # 5 dakikada bir
+        await asyncio.sleep(300)
 
-# 8. Ana Çalışma
+# 8. Ana Çalışma (Aynı)
 async def main():
     os.makedirs('/data/models', exist_ok=True)
     await periodic_training()
