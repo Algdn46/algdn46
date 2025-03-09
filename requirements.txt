@@ -1,27 +1,16 @@
-# Core
-numpy==1.23.5
+echo "numpy==1.23.5
 pandas==1.5.3
 python-dotenv==1.0.0
-
-# Trading
 ccxt==4.2.43
-talib-binary==0.4.24  # Düzeltildi
-
-# Machine Learning
+TA-Lib==0.4.24
 scikit-learn==1.2.2
-tensorflow==2.13.0      # Güncellendi
-keras==2.13.1           # Güncellendi
+tensorflow==2.13.0
+keras==2.13.1
 joblib==1.2.0
-
-# Async & Utilities
 nest-asyncio==1.5.8
 apscheduler==3.10.1
-
-# Telegram
 python-telegram-bot==20.3
-
-# Database
 sqlalchemy==2.0.19
+protobuf==3.20.3" > requirements.txt
 
-# Optimizasyon
-protobuf==3.20.3  # TensorFlow uyumluluğu için
+pip install -r requirements.txt
