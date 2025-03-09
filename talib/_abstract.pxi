@@ -1,6 +1,4 @@
-'''
-This file Copyright (c) 2013 Brian A Cappello <briancappello at gmail>
-'''
+
 import math
 import threading
 try:
