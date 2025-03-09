@@ -1,24 +1,35 @@
-FROM python:3.8
+FROM python:3.8-slim
 
-# Gerekli paketleri yükle (Debian tabanlı sistemler için)
-RUN apt-get update && apt-get install -y \
+WORKDIR /app
+
+# Gerekli araçları ve bağımlılıkları yükle
+RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     wget \
     curl \
     git \
     cmake \
-    libta-lib0 \
-    libta-lib-dev \
+    libc6-dev \
+    python3-dev \
+    && wget http://prdownloads.sourceforge.net/ta-lib/ta-lib-0.4.0-src.tar.gz \
+    && tar -xzf ta-lib-0.4.0-src.tar.gz \
+    && cd ta-lib/ \
+    && ./configure --prefix=/usr \
+    && make \
+    && make install \
+    && ldconfig \
+    && cd .. \
+    && rm -rf ta-lib-0.4.0-src.tar.gz ta-lib \
+    && apt-get purge --auto-remove -y wget \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Python bağımlılıklarını yükle
-WORKDIR /app
+# ta-lib Python paketini kur
+RUN pip install --no-cache-dir ta-lib
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Ana uygulamayı kopyala
 COPY . .
 
-# Çalıştırma komutu
 CMD ["python", "main.py"]
-
