@@ -1,15 +1,17 @@
-echo "numpy==1.23.5
+ecco numpy==1.24.5
+ccxt==4.2.0
 pandas==1.5.3
-python-dotenv==1.0.0
-ccxt==4.2.43
-TA-Lib==0.3.0
-scikit-learn==1.2.2
-tensorflow==2.13.0
-keras==2.13.1
-joblib==1.2.0
+asyncio==3.4.3
 nest-asyncio==1.5.8
-apscheduler==3.10.1
+sqlite3
 python-telegram-bot==20.3
+scikit-learn==1.2.2
+tensorflow==2.13.1
+apscheduler==3.10.1
+python-dotenv==1.0.0
+joblib==1.2.0
+ta-lib==0.3.0
+keras==2.13.1
 sqlalchemy==2.0.19
 protobuf==3.20.3" > requirements.txt
 
