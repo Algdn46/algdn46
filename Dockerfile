@@ -1,32 +1,34 @@
 # Base image
-
+# Temel Python imajını kullan
 FROM python:3.7.3-slim-stretch
 
-RUN apt-get update
+# Çalışma dizinini ayarla
+WORKDIR /app
 
-# Installing docker
-
-RUN apt-get update
+# Sistem bağımlılıklarını yükle
 RUN apt-get update && apt-get install -y \
     gcc \
-    && curl -L https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0/ta-lib-0.4.0-src.tar.gz | tar xvz
+    g++ \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /ta-lib
-# numpy needs to be installed before TA-Lib
-RUN pip3 install 'numpy==1.16.2' \
-  && pip3 install 'TA-Lib==0.4.17'
-
-RUN cd .. && rm -rf ta-lib/
-# Set environment variables
-ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
-    DEBIAN_FRONTEND=noninteractive
-# Copy requirements first to leverage Docker cache
+# Python bağımlılıklarını yüklemek için requirements.txt oluştur
 COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Python dependencies
-RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+# Uygulama dosyalarını kopyala
+COPY bot.py .
+COPY andirin.env /app/andirin.env
+
+# Veri ve model dosyaları için kalıcı bir volume dizini oluştur
+RUN mkdir -p /data/models
+
+# Volume tanımla (veritabanı ve modeller için)
+VOLUME ["/data"]
+
+# Ortam değişkenlerini ayarla
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1
 
 # Copy application files
 COPY . .
