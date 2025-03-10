@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib
-RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0/ta-lib-0.4.0-rc1.tar.gz && \
+RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0-rc1.tar.gz && \
     tar -xzf ta-lib-0.4.0-rc1.tar.gz && \
     cd ta-lib/ && \
     ./configure --prefix=/usr && \
