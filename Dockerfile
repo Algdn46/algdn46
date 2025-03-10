@@ -1,15 +1,16 @@
-# Base image
 # Temel Python imajını kullan
-FROM python:3.7.3-slim-stretch
+FROM python:3.11-slim
 
 # Çalışma dizinini ayarla
 WORKDIR /app
 
 # Sistem bağımlılıklarını yükle
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    libssl-dev \
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+        gcc \
+        g++ \
+        libssl-dev \
+    && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
 # Python bağımlılıklarını yüklemek için requirements.txt oluştur
@@ -30,8 +31,5 @@ VOLUME ["/data"]
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1
 
-# Copy application files
-COPY . .
-
-# Set entrypoint
+# Uygulamayı çalıştır
 CMD ["python", "bot.py"]
