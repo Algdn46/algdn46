@@ -1,5 +1,5 @@
 numpy==1.24.4
-ccxt==4.2.0
+ccxt==4.2.1
 pandas==1.5.3
 asyncio==3.4.3
 nest-asyncio==1.5.8
