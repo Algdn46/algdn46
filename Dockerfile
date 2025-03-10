@@ -14,14 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Install TA-Lib
-RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib/0.4.0-rc1.tar.gz && \
-    tar -xzf ta-lib-0.4.0-rc1.tar.gz && \
+RUN wget https://downloads.sourceforge.net/project/ta-lib/ta-lib-0.3.0-src.tar.gz && \
+    tar -xzf ta-lib-0.3.0-src.tar.gz && \
     cd ta-lib/ && \
     ./configure --prefix=/usr && \
     make && \
     make install && \
     cd .. && \
-    rm -rf ta-lib-0.4.0-rc1.tar.gz ta-lib
+    rm -rf ta-lib-0.3.0-src.tar.gz ta-lib
 
 # Set working directory
 WORKDIR /app
