@@ -1,3 +1,4 @@
+
 # Temel Python imajını kullan
 FROM python:3.11-slim
 
@@ -12,6 +13,9 @@ RUN apt-get update \
         libssl-dev \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# Pip'i güncelle
+RUN pip install --upgrade pip
 
 # Python bağımlılıklarını yüklemek için requirements.txt oluştur
 COPY requirements.txt .
