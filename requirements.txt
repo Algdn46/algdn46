@@ -9,7 +9,7 @@ tensorflow==2.13.1
 apscheduler==3.10.1
 python-dotenv==1.0.0
 joblib==1.2.0
-ta-lib==0.3.0
+ta-lib==0.4.28
 keras==2.13.1
 sqlalchemy==2.0.19
 protobuf==3.20.3
