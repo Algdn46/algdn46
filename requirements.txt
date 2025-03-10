@@ -13,6 +13,6 @@ joblib==1.2.0
 ta-lib==0.3.0
 keras==2.13.1
 sqlalchemy==2.0.19
-protobuf==3.20.3" > requirements.txt
+protobuf==3.20.3 > requirements.txt
 
 pip install -r requirements.txt
