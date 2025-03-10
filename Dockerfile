@@ -1,6 +1,7 @@
 
 # Temel Python imajını kullan
 FROM python:3.11-slim
+RUN pip install --upgrade pip
 
 # Çalışma dizinini ayarla
 WORKDIR /app
@@ -15,7 +16,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 # Pip'i güncelle
-RUN pip install --upgrade pip
+
 
 # Python bağımlılıklarını yüklemek için requirements.txt oluştur
 COPY requirements.txt .
