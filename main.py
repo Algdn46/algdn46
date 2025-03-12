@@ -99,7 +99,10 @@ class DataManager:
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
             
-            # Teknik Göstergeler
+            # Teknik Göstergeler (TALib ile hesaplanıyor)
+            # - EMA9 ve EMA21: Trend yönünü belirlemek için kısa ve orta vadeli hareketli ortalamalar
+            # - RSI: Aşırı alım/satım durumlarını filtrelemek için (14 periyot)
+            # - ATR: Volatilite ölçümü ve risk yönetimi için (14 periyot)
             df['ema9'] = talib.EMA(df['close'], timeperiod=9)
             df['ema21'] = talib.EMA(df['close'], timeperiod=21)
             df['rsi'] = talib.RSI(df['close'], timeperiod=14)
@@ -111,6 +114,37 @@ class DataManager:
         except Exception as e:
             logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
             return None
+
+# Teknik Göstergeleri İnceleme Fonksiyonu (Yeni Ek - Çakışma Yok)
+def analyze_technical_indicators(df: pd.DataFrame) -> dict:
+    """
+    Teknik göstergeleri analiz eder ve durumu açıklar.
+    - EMA Kesişimleri: Trend yönünü belirler.
+    - RSI: Aşırı alım/satım durumlarını kontrol eder.
+    - ATR: Volatilite ve risk seviyelerini değerlendirir.
+    """
+    analysis = {}
+    
+    # EMA Analizi
+    if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
+        analysis['trend'] = 'Yükseliş (EMA9 > EMA21)'
+    else:
+        analysis['trend'] = 'Düşüş (EMA9 < EMA21)'
+    
+    # RSI Analizi
+    rsi_latest = df['rsi'].iloc[-1]
+    if rsi_latest > 70:
+        analysis['rsi'] = f"Aşırı Alım ({rsi_latest:.2f})"
+    elif rsi_latest < 30:
+        analysis['rsi'] = f"Aşırı Satım ({rsi_latest:.2f})"
+    else:
+        analysis['rsi'] = f"Nötr ({rsi_latest:.2f})"
+    
+    # ATR Analizi
+    atr_latest = df['atr'].iloc[-1]
+    analysis['volatility'] = f"ATR: {atr_latest:.4f} (Yüksek volatilite riskli pozisyonlar için dikkat)"
+    
+    return analysis
 
 # 2. Çoklu Zaman Dilimi Özellikleri
 def create_multiframe_features(symbol: str):
@@ -127,6 +161,8 @@ def create_multiframe_features(symbol: str):
                 continue
                 
             # Özellik Mühendisliği
+            # - Teknik göstergeler burada ek özelliklerle zenginleştiriliyor
+            # - Returns, volatilite ve MA oranları modele daha fazla bilgi sağlar
             df['returns'] = df['close'].pct_change()
             df['volatility'] = df['returns'].rolling(20).std()
             df['volume_change'] = df['volume'].pct_change()
@@ -252,6 +288,7 @@ async def validate_signal(symbol: str) -> bool:
         rf_input = X.iloc[-1:].values.reshape(1, -1)
         rf_prob = rf_model.predict_proba(rf_input)[0][1]
         
+        # Teknik göstergeler burada dolaylı olarak modele etki ediyor (X üzerinden)
         return (0.6 * lstm_prob + 0.4 * rf_prob) > 0.65
     except Exception as e:
         logging.error(f"Doğrulama hatası ({symbol}): {e}")
@@ -272,6 +309,9 @@ async def generate_signals():
                         ORDER BY timestamp DESC LIMIT 100
                     """, conn)
                     
+                    # Teknik Göstergelerin Doğrudan İncelenmesi
+                    # - EMA Kesişimi: Trend yönünü belirler
+                    # - RSI: Aşırı alım/satım filtresi
                     long_signal = (
                         df_5m['ema9'].iloc[-2] < df_5m['ema21'].iloc[-2] and
                         df_5m['ema9'].iloc[-1] > df_5m['ema21'].iloc[-1] and
@@ -288,6 +328,10 @@ async def generate_signals():
                         continue
                         
                     direction = 'LONG' if long_signal else 'SHORT'
+                    
+                    # Teknik Göstergelerin Analizi (Ek Açıklama)
+                    analysis = analyze_technical_indicators(df_5m)
+                    logging.info(f"{symbol} Teknik Analiz: {analysis}")
                     
                     if await validate_signal(symbol):
                         balance = exchange.fetch_balance()['USDT']['free']
