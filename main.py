@@ -45,7 +45,7 @@ logging.basicConfig(
 load_dotenv('andirin.env')
 
 # Veritabanı Bağlantısı
-conn = sqlite3.connect('/data/trading_data.db', check_same_thread=False)
+conn = sqlite3.connect('trading_data.db', check_same_thread=False)
 c = conn.cursor()
 
 # Veritabanı Şeması
