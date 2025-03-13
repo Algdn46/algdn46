@@ -25,7 +25,7 @@ from collections import deque
 
 # Sürüm Kontrolleri
 assert tf.__version__ == '2.13.0', f"TensorFlow 2.13.0 gerekli! Mevcut: {tf.__version__}"
-from tensorflow.keras import __version__ as keras_version
+from tensorflow import __version__ as tf_version
 assert keras_version == '2.13.1', f"Keras 2.13.1 gerekli! Mevcut: {keras_version}"
 
 # Async Çözümü
