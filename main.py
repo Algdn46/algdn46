@@ -42,7 +42,7 @@ logging.basicConfig(
 )
 
 # Çevresel Değişkenler
-load_dotenv('andirin.env')
+load_dotenv('config.env')
 
 # Veritabanı Bağlantısı
 conn = sqlite3.connect('trading_data.db', check_same_thread=False)
