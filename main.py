@@ -93,31 +93,31 @@ CONFIG = {
 # 1. Veri Yönetim Sistemi
 class DataManager:
     @staticmethod
-async def fetch_and_store(symbol: str, timeframe: str):
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-# Teknik Göstergeler (TALib ile hesaplanıyor)
+    async def fetch_and_store(symbol: str, timeframe: str):
+        try:
+            ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+            # Teknik Göstergeler (TALib ile hesaplanıyor)
             # - EMA9 ve EMA21: Trend yönünü belirlemek için kısa ve orta vadeli hareketli ortalamalar
             # - RSI: Aşırı alım/satım durumlarını filtrelemek için (14 periyot)
             # - ATR: Volatilite ölçümü ve risk yönetimi için (14 periyot)
-        df['ema9'] = talib.EMA(df['close'], timeperiod=9)
-        df['ema21'] = talib.EMA(df['close'], timeperiod=21)
-        df['rsi'] = talib.RSI(df['close'], timeperiod=14)
-        df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-# Veritabanına Kaydetme
-        for _, row in df.iterrows():
-            c.execute('''INSERT OR REPLACE INTO market_data 
-                         (symbol, timeframe, timestamp, open, high, low, close, volume, ema9, ema21, rsi, atr) 
-                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-                      (symbol, timeframe, row['timestamp'], row['open'], row['high'], row['low'],
-                       row['close'], row['volume'], row['ema9'], row['ema21'], row['rsi'], row['atr']))
-        conn.commit()
-        return df.dropna()
-    except Exception as e:
-        logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
-        return None
+            df['ema9'] = talib.EMA(df['close'], timeperiod=9)
+            df['ema21'] = talib.EMA(df['close'], timeperiod=21)
+            df['rsi'] = talib.RSI(df['close'], timeperiod=14)
+            df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
+            # Veritabanına Kaydetme
+            for _, row in df.iterrows():
+                c.execute('''INSERT OR REPLACE INTO market_data 
+                             (symbol, timeframe, timestamp, open, high, low, close, volume, ema9, ema21, rsi, atr) 
+                             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+                          (symbol, timeframe, row['timestamp'], row['open'], row['high'], row['low'],
+                           row['close'], row['volume'], row['ema9'], row['ema21'], row['rsi'], row['atr']))
+            conn.commit()
+            return df.dropna()
+        except Exception as e:
+            logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
+            return None
 
 # Teknik Göstergeleri İnceleme Fonksiyonu (Yeni Ek - Çakışma Yok)
 def analyze_technical_indicators(df: pd.DataFrame) -> dict:
