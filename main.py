@@ -26,7 +26,6 @@ from collections import deque
 # Sürüm Kontrolleri
 assert tf.__version__ == '2.13.1', f"TensorFlow 2.13.1 gerekli! Mevcut: {tf.__version__}"
 from tensorflow import __version__ as tf_version
-assert tf_version == '2.13.1', f"Keras 2.13.1 gerekli! Mevcut: {tf_version}"
 
 # Async Çözümü
 nest_asyncio.apply()
@@ -54,6 +53,7 @@ c.execute('''CREATE TABLE IF NOT EXISTS market_data
               open REAL, high REAL, low REAL, close REAL, volume REAL,
               ema9 REAL, ema21 REAL, rsi REAL, atr REAL,
               PRIMARY KEY (symbol, timeframe, timestamp))''')
+conn.commit()
 c.execute('''CREATE TABLE IF NOT EXISTS model_performance
              (symbol TEXT, model_type TEXT, timestamp DATETIME,
               accuracy REAL, profit REAL)''')
@@ -109,7 +109,13 @@ class DataManager:
             df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
             
             # Veritabanına Kaydetme
-            df.to_sql('market_data', conn, if_exists='append', index=False)
+            for _, row in df.iterrows():
+    c.execute('''INSERT OR REPLACE INTO market_data 
+                 (symbol, timeframe, timestamp, open, high, low, close, volume, ema9, ema21, rsi, atr) 
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+              (symbol, timeframe, row['timestamp'], row['open'], row['high'], row['low'], 
+               row['close'], row['volume'], row['ema9'], row['ema21'], row['rsi'], row['atr']))
+conn.commit()
             return df.dropna()
         except Exception as e:
             logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
@@ -382,10 +388,13 @@ async def broadcast_signal(signal):
 
 # 8. Ana Program
 async def main():
-    os.makedirs('/data/models', exist_ok=True)
+    os.makedirs('models', exist_ok=True)  
     
     global application
-    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+    token = os.getenv('TELEGRAM_TOKEN')
+if not token:
+    raise ValueError("TELEGRAM_TOKEN çevresel değişkeni eksik!")
+application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CommandHandler("stop", stop_bot))
     
@@ -393,9 +402,12 @@ async def main():
     scheduler.add_job(update_models, 'interval', hours=12)
     scheduler.start()
     
-    asyncio.create_task(generate_signals())
+    tasks = [asyncio.create_task(generate_signals())]
+await application.run_polling()
+await asyncio.gather(*tasks)
     
     await application.run_polling()
+conn.close() 
 
 if __name__ == '__main__':
     asyncio.run(main())
