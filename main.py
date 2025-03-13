@@ -109,13 +109,14 @@ class DataManager:
             df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
             
             # Veritabanına Kaydetme
-            for _, row in df.iterrows():
+    for _, row in df.iterrows():
     c.execute('''INSERT OR REPLACE INTO market_data 
                  (symbol, timeframe, timestamp, open, high, low, close, volume, ema9, ema21, rsi, atr) 
                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
-              (symbol, timeframe, row['timestamp'], row['open'], row['high'], row['low'], 
+              (symbol, timeframe, row['timestamp'], row['open'], row['high'], row['low'],
                row['close'], row['volume'], row['ema9'], row['ema21'], row['rsi'], row['atr']))
 conn.commit()
+
             return df.dropna()
         except Exception as e:
             logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
