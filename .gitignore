@@ -16,4 +16,3 @@ data/
 *.pyc
 __pycache__/
 trading_data.db
-trading_data.db
