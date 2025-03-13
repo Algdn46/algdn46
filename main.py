@@ -49,7 +49,7 @@ conn = sqlite3.connect('trading_data.db', check_same_thread=False)
 c = conn.cursor()
 
 # Veritabanı Şeması
-c.execute('''CREATE TABLE IF NOT EXISTS market_data
+c.execute('''CREATE TABLE IF NOT EXISTS market_data (...)''')
              (symbol TEXT, timeframe TEXT, timestamp DATETIME,
               open REAL, high REAL, low REAL, close REAL, volume REAL,
               ema9 REAL, ema21 REAL, rsi REAL, atr REAL,
