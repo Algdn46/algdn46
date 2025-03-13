@@ -386,13 +386,10 @@ async def broadcast_signal(signal):
 
 # 8. Ana Program
 async def main():
-    os.makedirs('models', exist_ok=True)  
+    os.makedirs('/data/models', exist_ok=True)
     
     global application
-    token = os.getenv('TELEGRAM_TOKEN')
-if not token:
-    raise ValueError("TELEGRAM_TOKEN çevresel değişkeni eksik!")
-application = Application.builder().token(token).build()
+    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CommandHandler("stop", stop_bot))
     
@@ -401,8 +398,8 @@ application = Application.builder().token(token).build()
     scheduler.start()
     
     tasks = [asyncio.create_task(generate_signals())]
-await application.run_polling()
-await asyncio.gather(*tasks)
+    await application.run_polling()
+    await asyncio.gather(*tasks)
     
     await application.run_polling()
 conn.close() 
