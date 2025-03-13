@@ -302,8 +302,10 @@ async def validate_signal(symbol: str) -> bool:
 async def generate_signals():
     while True:
         if CONFIG['running']:
+            logging.info("Sinyal üretimi başladı.")
             for symbol in CONFIG['SYMBOLS']:
                 try:
+                    logging.info(f"{symbol} için veri çekiliyor...")
                     await DataManager.fetch_and_store(symbol, '5m')
                     await DataManager.fetch_and_store(symbol, '1h')
                     
@@ -312,31 +314,24 @@ async def generate_signals():
                         WHERE symbol='{symbol}' AND timeframe='5m' 
                         ORDER BY timestamp DESC LIMIT 100
                     """, conn)
+                    logging.info(f"{symbol} için {len(df_5m)} satır veri alındı.")
                     
-                    # Teknik Göstergelerin Doğrudan İncelenmesi
-                    # - EMA Kesişimi: Trend yönünü belirler
-                    # - RSI: Aşırı alım/satım filtresi
                     long_signal = (
                         df_5m['ema9'].iloc[-2] < df_5m['ema21'].iloc[-2] and
                         df_5m['ema9'].iloc[-1] > df_5m['ema21'].iloc[-1] and
                         df_5m['rsi'].iloc[-1] < 65
                     )
-                    
                     short_signal = (
                         df_5m['ema9'].iloc[-2] > df_5m['ema21'].iloc[-2] and
                         df_5m['ema9'].iloc[-1] < df_5m['ema21'].iloc[-1] and
                         df_5m['rsi'].iloc[-1] > 35
                     )
+                    logging.info(f"{symbol}: Long: {long_signal}, Short: {short_signal}")
                     
                     if not (long_signal or short_signal):
                         continue
-                        
+                    
                     direction = 'LONG' if long_signal else 'SHORT'
-                    
-                    # Teknik Göstergelerin Analizi (Ek Açıklama)
-                    analysis = analyze_technical_indicators(df_5m)
-                    logging.info(f"{symbol} Teknik Analiz: {analysis}")
-                    
                     if await validate_signal(symbol):
                         balance = exchange.fetch_balance()['USDT']['free']
                         atr = df_5m['atr'].iloc[-1]
@@ -353,11 +348,14 @@ async def generate_signals():
                             'size': round(size, 4),
                             'timestamp': datetime.now().isoformat()
                         }
-                        
                         await broadcast_signal(signal)
                         logging.info(f"Yeni Sinyal: {signal}")
+                    else:
+                        logging.info(f"{symbol}: Sinyal doğrulanmadı.")
                 except Exception as e:
                     logging.error(f"Sinyal hatası ({symbol}): {e}")
+        else:
+            logging.info("Bot durduruldu, sinyal üretimi bekliyor.")
         await asyncio.sleep(300)
 
 # 7. Telegram Entegrasyonu
