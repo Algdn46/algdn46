@@ -15,3 +15,4 @@ data/
 # Python önbellek dosyaları
 *.pyc
 __pycache__/
+trading_data.db
