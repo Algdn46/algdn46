@@ -1,185 +1,135 @@
 import ccxt
-import sqlite3
-import telebot
-import time
+import pandas as pd
+import numpy as np
 import os
+import time
 import logging
+from datetime import datetime, timedelta
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from sklearn.preprocessing import MinMaxScaler
+import tkinter as tk
+from tkinter import ttk
 from dotenv import load_dotenv
-from ratelimit import limits, sleep_and_retry
+from tenacity import retry, stop_after_attempt, wait_exponential
+import requests
 
-# Logging konfigurasyonu
-logging.basicConfig(
-    filename='trading_bot.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
+# Config Yükleme
+load_dotenv('config.env')
 
-# API anahtarlarını yükle
-load_dotenv("config.env")
-
-# Gerekli çevresel değişkenleri kontrol et
-required_envs = {
-    "BINANCE_API_KEY": os.getenv("BINANCE_API_KEY"),
-    "BINANCE_SECRET_KEY": os.getenv("BINANCE_SECRET_KEY"),
-    "OPENAI_API_KEY": os.getenv("OPENAI_API_KEY"),
-    "TELEGRAM_BOT_TOKEN": os.getenv("TELEGRAM_BOT_TOKEN"),
-    "TELEGRAM_CHAT_ID": os.getenv("TELEGRAM_CHAT_ID")
-}
-
-for env_name, env_value in required_envs.items():
-    if not env_value:
-        raise ValueError(f"{env_name} çevresel değişkeni bulunamadı!")
-
-# Binance Futures bağlantısı
-exchange = ccxt.binance({
-    "apiKey": required_envs["BINANCE_API_KEY"],
-    "secret": required_envs["BINANCE_SECRET_KEY"],
-    "options": {"defaultType": "future"},
-    "timeout": 30000  # 30 saniye timeout
+# API Konfigürasyonu
+exchange = ccxt.mexc({
+        'apiKey': os.getenv('API_KEY'),
+        'secret': os.getenv('SECRET_KEY'),
+        'enableRateLimit': True,
+        'options': {'defaultType': 'future'}
 })
 
-# OpenAI API
-openai.api_key = required_envs["OPENAI_API_KEY"]
+# Global Ayarlar
+SYMBOLS = []
+TIMEFRAMES = ['5m', '15m', '1h']
+LEVERAGE = 10
+RISK_PER_TRADE = 0.02
+LSTM_LOOKBACK = 50
+EMA_PERIODS = (9, 21)
+RSI_PERIOD = 14
+ATR_PERIOD = 14
 
-# Telegram bot
-bot = telebot.TeleBot(required_envs["TELEGRAM_BOT_TOKEN"])
-TELEGRAM_CHAT_ID = required_envs["TELEGRAM_CHAT_ID"]
+open_positions = {}
+signals = {}
+lstm_model = None
 
-class DatabaseManager:
-    def _init_(self, db_name="trading_data.db"):
-        self.conn = sqlite3.connect(db_name, check_same_thread=False)
-        self.cursor = self.conn.cursor()
-        self._init_db()
+# Teknik Göstergeler
+def add_indicators(df):
+        # EMA
+        df['EMA9'] = df['close'].ewm(span=9).mean()
+        df['EMA21'] = df['close'].ewm(span=21).mean()
 
-    def _init_db(self):
-        self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS signals (
-                symbol TEXT,
-                entry REAL,
-                sl REAL,
-                tp REAL,
-                timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-                PRIMARY KEY (symbol, entry, sl, tp)
-            )
-        """)
-        self.conn.commit()
+    # MACD
+        ema12 = df['close'].ewm(span=12).mean()
+        ema26 = df['close'].ewm(span=26).mean()
+        df['MACD'] = ema12 - ema26
+        df['Signal'] = df['MACD'].ewm(span=9).mean()
 
-    def already_sent(self, symbol, entry, sl, tp):
-        self.cursor.execute(
-            "SELECT * FROM signals WHERE symbol=? AND entry=? AND sl=? AND tp=?",
-            (symbol, entry, sl, tp)
-        )
-        return self.cursor.fetchone() is not None
+    # Bollinger Bantları
+        df['MA20'] = df['close'].rolling(20).mean()
+        df['STD20'] = df['close'].rolling(20).std()
+        df['UpperBand'] = df['MA20'] + 2*df['STD20']
+        df['LowerBand'] = df['MA20'] - 2*df['STD20']
 
-    def save_signal(self, symbol, entry, sl, tp):
-        self.cursor.execute(
-            "INSERT OR REPLACE INTO signals (symbol, entry, sl, tp) VALUES (?, ?, ?, ?)",
-            (symbol, entry, sl, tp)
-        )
-        self.conn.commit()
+    # ATR
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        df['ATR'] = tr.rolling(ATR_PERIOD).mean()
 
-    def close(self):
-        self.conn.close()
+    return df
 
-@sleep_and_retry
-@limits(calls=10, period=60)  # Dakikada 10 istek
-def fetch_ticker_with_limit(exchange, symbol):
-    return exchange.fetch_ticker(symbol)
+# Risk Yönetimi
+def dynamic_risk(symbol, df):
+        volatility = df['ATR'].iloc[-1] / df['close'].iloc[-1]
+        if volatility > 0.05: return 0.01
+elif volatility > 0.03: return 0.02
+else: return 0.03
 
-def generate_signal(symbol, price):
-    """Yapay zeka ile sinyal üretir"""
-    prompt = f"{symbol} için Binance Futures analiz yap. Güncel fiyat {price} USDT. Long mu Short mu almalıyım? SL, TP ve risk hesapla."
-    
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "system", "content": "Sadece kısa ve net bir sinyal ver."},
-                     {"role": "user", "content": prompt}]
-        )
-        signal_text = response["choices"][0]["message"]["content"]
-        return parse_signal(signal_text)
-    except Exception as e:
-        logging.error(f"OpenAI sinyal üretimi hatası: {e}")
-        return None
+def calculate_size(entry, sl, risk):
+        balance = exchange.fetch_balance()['USDT']['free']
+        return (balance * risk) / abs(entry - sl)
 
-def parse_signal(text):
-    """Sinyali ayrıştırır"""
-    try:
-        lines = text.strip().split("\n")
-        if not lines or len(lines) < 5:
-            return None
-            
-        direction = "Long" if "Long" in lines[0].upper() else "Short"
-        
-        def extract_value(line):
-            return float(line.split(":")[1].strip().replace("USDT", "").strip())
-            
-        entry = extract_value(lines[1])
-        sl = extract_value(lines[2])
-        tp = extract_value(lines[3])
-        risk = extract_value(lines[4])
-        
-        # Mantıksal kontrol
-        if direction == "Long" and (sl >= entry or tp <= entry):
-            return None
-        if direction == "Short" and (sl <= entry or tp >= entry):
-            return None
-            
-        return direction, entry, sl, tp, risk
-    except (IndexError, ValueError) as e:
-        logging.error(f"Sinyal ayrıştırma hatası: {e}\nText: {text}")
-        return None
+# Bildirim Sistemi
+def send_alert(message):
+        token = os.getenv('TELEGRAM_TOKEN')
+        chat_id = os.getenv('TELEGRAM_CHAT_ID')
+        url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}"
+        requests.get(url)
 
-def send_telegram_message(symbol, direction, entry, sl, tp, risk):
-    """Telegram'a sinyal gönderir"""
-    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-    message = f"""
-📢 *{symbol} {direction} Sinyali* ({timestamp})
-📌 Giriş: {entry} USDT
-📉 Stop-Loss: {sl} USDT
-📈 Take-Profit: {tp} USDT
-⚠️ Risk: {risk}
-    """
-    try:
-        bot.send_message(TELEGRAM_CHAT_ID, message, parse_mode="Markdown")
-    except Exception as e:
-        logging.error(f"Telegram mesaj gönderme hatası: {e}")
+# LSTM Modeli
+def create_lstm():
+        model = Sequential([
+                    LSTM(64, return_sequences=True, input_shape=(LSTM_LOOKBACK, 5)),
+                    Dropout(0.3),
+                    LSTM(32),
+                    Dropout(0.3),
+                    Dense(3)
+        ])
+        model.compile(optimizer='adam', loss='mse')
+        return model
 
-def main():
-    db = DatabaseManager()
-    try:
-        while True:
-            try:
-                markets = exchange.load_markets()
-                symbols = [s for s in markets if "/USDT" in s and "PERP" in s]
+def load_model():
+        global lstm_model
+        try:
+                    lstm_model = load_model('lstm_model.h5')
+                except:
+        lstm_model = create_lstm()
 
-                for symbol in symbols:
-                    try:
-                        ticker = fetch_ticker_with_limit(exchange, symbol)
-                        price = ticker["last"]
-                        
-                        ai_signal = generate_signal(symbol, price)
-                        
-                        if ai_signal:
-                            direction, entry, sl, tp, risk = ai_signal
-                            
-                            if not db.already_sent(symbol, entry, sl, tp):
-                                send_telegram_message(symbol, direction, entry, sl, tp, risk)
-                                db.save_signal(symbol, entry, sl, tp)
-                                logging.info(f"Sinyal gönderildi: {symbol} {direction}")
-                                
-                    except Exception as e:
-                        logging.error(f"Sembol {symbol} için hata: {e}")
-                        
-                time.sleep(60 * 5)  # 5 dakika bekle
-                
-            except Exception as e:
-                logging.error(f"Ana döngüde hata: {e}")
-                time.sleep(60)
-                
-    finally:
-        db.close()
+# Veri Çekme
+@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
+def fetch_data(symbol, timeframe):
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+        df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return add_indicators(df)
 
-if _name_ == "_main_":
-    main()
+# Sinyal Üretme
+def generate_signal(symbol):
+        try:
+                    df = fetch_data(symbol, '5m')
+                    ticker = exchange.fetch_ticker(symbol)
+                    price = ticker['last']
 
+        # LSTM Tahmini
+            scaler = MinMaxScaler()
+        scaled = scaler.fit_transform(df[['close','high','low','volume','ATR']].tail(LSTM_LOOKBACK))
+        prediction = lstm_model.predict(scaled.reshape(1, LSTM_LOOKBACK, 5))
+        pred_price = scaler.inverse_transform(prediction)[0][0]
+
+        # Sinyal Koşulları
+        macd_bullish = df['MACD'].iloc[-1] > df['Signal'].iloc[-1]
+        in_lower = price < df['LowerBand'].iloc[-1]
+        volume_spike = df['volume'].iloc[-1] > df['volume'].mean()
+
+        long = macd_bullish and in_lower and volume_spike
+        short = not macd_bus
