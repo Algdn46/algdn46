@@ -1,3 +1,4 @@
+import ssl
 import ccxt
 import pandas as pd
 import numpy as np
@@ -18,8 +19,11 @@ exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
     'enableRateLimit': True,
-    'rateLimit': 1000,  # 1 saniye delay ekleyerek rate limit aşımını önle
-    'options': {'defaultType': 'future'}
+    'rateLimit': 1000,
+    'options': {'defaultType': 'future'},
+    'session': {
+        'context': ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)  # TLS 1.2 kullan
+    }
 })
 
 # Global Sabitler
