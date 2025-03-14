@@ -1,135 +1,179 @@
 import ccxt
 import pandas as pd
 import numpy as np
-import os
 import time
+import os
 import logging
-from datetime import datetime, timedelta
-import threading
-from concurrent.futures import ThreadPoolExecutor
-from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense, Dropout
-from sklearn.preprocessing import MinMaxScaler
-import tkinter as tk
-from tkinter import ttk
+import talib
+from datetime import datetime
+from telegram import Update
+from telegram.ext import Application, CommandHandler, CallbackContext
 from dotenv import load_dotenv
-from tenacity import retry, stop_after_attempt, wait_exponential
-import requests
 
-# Config Yükleme
+# **Konfigürasyon ve Log Ayarları**
 load_dotenv('config.env')
+logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# API Konfigürasyonu
-exchange = ccxt.mexc({
-        'apiKey': os.getenv('API_KEY'),
-        'secret': os.getenv('SECRET_KEY'),
-        'enableRateLimit': True,
-        'options': {'defaultType': 'future'}
+# **Binance Futures API Konfigürasyonu**
+exchange = ccxt.binance({
+    'apiKey': os.getenv('BINANCE_API_KEY'),
+    'secret': os.getenv('BINANCE_SECRET_KEY'),
+    'enableRateLimit': True,
+    'options': {'defaultType': 'future'}
 })
 
-# Global Ayarlar
-SYMBOLS = []
-TIMEFRAMES = ['5m', '15m', '1h']
-LEVERAGE = 10
-RISK_PER_TRADE = 0.02
-LSTM_LOOKBACK = 50
-EMA_PERIODS = (9, 21)
-RSI_PERIOD = 14
-ATR_PERIOD = 14
+# **Global Değişkenler**
+INTERVAL = '5m'
+CHECK_INTERVAL = 300  # 5 dakika
+LEVERAGE = int(os.getenv('LEVERAGE', 10))
+RISK_PER_TRADE = float(os.getenv('RISK_PER_TRADE', 0.02))
 
-open_positions = {}
-signals = {}
-lstm_model = None
+# **Telegram Bot Konfigürasyonu**
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-# Teknik Göstergeler
-def add_indicators(df):
-        # EMA
-        df['EMA9'] = df['close'].ewm(span=9).mean()
-        df['EMA21'] = df['close'].ewm(span=21).mean()
+# **Marketleri Başlangıçta Yükle**
+try:
+    markets = exchange.load_markets()
+except Exception as e:
+    logger.error(f"Market verisi yüklenirken hata: {str(e)}")
+    markets = {}
 
-    # MACD
-        ema12 = df['close'].ewm(span=12).mean()
-        ema26 = df['close'].ewm(span=26).mean()
-        df['MACD'] = ema12 - ema26
-        df['Signal'] = df['MACD'].ewm(span=9).mean()
-
-    # Bollinger Bantları
-        df['MA20'] = df['close'].rolling(20).mean()
-        df['STD20'] = df['close'].rolling(20).std()
-        df['UpperBand'] = df['MA20'] + 2*df['STD20']
-        df['LowerBand'] = df['MA20'] - 2*df['STD20']
-
-    # ATR
-        high_low = df['high'] - df['low']
-        high_close = (df['high'] - df['close'].shift()).abs()
-        low_close = (df['low'] - df['close'].shift()).abs()
-        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        df['ATR'] = tr.rolling(ATR_PERIOD).mean()
-
-    return df
-
-# Risk Yönetimi
-def dynamic_risk(symbol, df):
-        volatility = df['ATR'].iloc[-1] / df['close'].iloc[-1]
-        if volatility > 0.05: return 0.01
-elif volatility > 0.03: return 0.02
-else: return 0.03
-
-def calculate_size(entry, sl, risk):
-        balance = exchange.fetch_balance()['USDT']['free']
-        return (balance * risk) / abs(entry - sl)
-
-# Bildirim Sistemi
-def send_alert(message):
-        token = os.getenv('TELEGRAM_TOKEN')
-        chat_id = os.getenv('TELEGRAM_CHAT_ID')
-        url = f"https://api.telegram.org/bot{token}/sendMessage?chat_id={chat_id}&text={message}"
-        requests.get(url)
-
-# LSTM Modeli
-def create_lstm():
-        model = Sequential([
-                    LSTM(64, return_sequences=True, input_shape=(LSTM_LOOKBACK, 5)),
-                    Dropout(0.3),
-                    LSTM(32),
-                    Dropout(0.3),
-                    Dense(3)
-        ])
-        model.compile(optimizer='adam', loss='mse')
-        return model
-
-def load_model():
-        global lstm_model
+def fetch_ohlcv_with_retry(symbol, interval, limit=100, max_retries=3):
+    """Binance'den OHLCV verisini çekme (hata yönetimi ile)"""
+    for attempt in range(max_retries):
         try:
-                    lstm_model = load_model('lstm_model.h5')
-                except:
-        lstm_model = create_lstm()
+            return exchange.fetch_ohlcv(symbol, timeframe=interval, limit=limit)
+        except ccxt.RateLimitExceeded:
+            logger.warning(f"{symbol} | Rate limit aşıldı, tekrar deneniyor ({attempt + 1}/{max_retries})...")
+            time.sleep(exchange.rateLimit / 1000.0)  # Milisaniye cinsinden rate limit
+        except Exception as e:
+            logger.error(f"{symbol} | OHLCV çekme hatası: {str(e)}")
+    return None
 
-# Veri Çekme
-@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10))
-def fetch_data(symbol, timeframe):
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=100)
+def calculate_ema(closes, timeperiod):
+    """EMA hesaplama"""
+    if len(closes) < timeperiod:
+        return None
+    return talib.EMA(closes, timeperiod=timeperiod)
+
+def calculate_rsi(closes, timeperiod):
+    """RSI hesaplama"""
+    if len(closes) < timeperiod:
+        return None
+    return talib.RSI(closes, timeperiod=timeperiod)
+
+def calculate_macd(closes, fastperiod, slowperiod, signalperiod):
+    """MACD hesaplama"""
+    if len(closes) < slowperiod:
+        return None, None
+    macd, signal, _ = talib.MACD(closes, fastperiod=fastperiod, slowperiod=slowperiod, signalperiod=signalperiod)
+    return macd, signal
+
+def calculate_atr(highs, lows, closes, timeperiod):
+    """ATR hesaplama"""
+    if len(highs) < timeperiod:
+        return None
+    return talib.ATR(highs, lows, closes, timeperiod=timeperiod)
+
+def calculate_technical_indicators(df):
+    """TA-Lib ile teknik göstergeleri hesaplar"""
+    try:
+        closes = df['close'].values
+        highs = df['high'].values
+        lows = df['low'].values
+        
+        df['EMA9'] = calculate_ema(closes, 9)
+        df['EMA21'] = calculate_ema(closes, 21)
+        df['RSI'] = calculate_rsi(closes, 14)
+        
+        macd, signal = calculate_macd(closes, 12, 26, 9)
+        df['MACD'] = macd
+        df['Signal'] = signal
+        
+        df['ATR'] = calculate_atr(highs, lows, closes, 14)
+        
+        return df.dropna()
+    except Exception as e:
+        logger.error(f"Gösterge hesaplama hatası: {str(e)}")
+        return df
+
+def generate_signal(symbol, interval, limit=100):
+    """Sinyal üretme fonksiyonu"""
+    try:
+        ohlcv = fetch_ohlcv_with_retry(symbol, interval, limit)
+        if ohlcv is None:
+            return None, None, None, None
+        
         df = pd.DataFrame(ohlcv, columns=['timestamp','open','high','low','close','volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        return add_indicators(df)
+        df = calculate_technical_indicators(df)
+        
+        if df.empty:
+            return None, None, None, None
 
-# Sinyal Üretme
-def generate_signal(symbol):
-        try:
-                    df = fetch_data(symbol, '5m')
-                    ticker = exchange.fetch_ticker(symbol)
-                    price = ticker['last']
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
 
-        # LSTM Tahmini
-            scaler = MinMaxScaler()
-        scaled = scaler.fit_transform(df[['close','high','low','volume','ATR']].tail(LSTM_LOOKBACK))
-        prediction = lstm_model.predict(scaled.reshape(1, LSTM_LOOKBACK, 5))
-        pred_price = scaler.inverse_transform(prediction)[0][0]
+        ema_cross = (prev['EMA9'] < prev['EMA21']) and (last['EMA9'] > last['EMA21'])
+        macd_bullish = last['MACD'] > last['Signal']
+        rsi_ok = last['RSI'] < 65
+        
+        if ema_cross and macd_bullish and rsi_ok:
+            sl = last['low'] - (last['ATR'] * 1.5)
+            tp = last['close'] + (last['ATR'] * 3)
+            return 'LONG', last['close'], sl, tp
 
-        # Sinyal Koşulları
-        macd_bullish = df['MACD'].iloc[-1] > df['Signal'].iloc[-1]
-        in_lower = price < df['LowerBand'].iloc[-1]
-        volume_spike = df['volume'].iloc[-1] > df['volume'].mean()
+        ema_death_cross = (prev['EMA9'] > prev['EMA21']) and (last['EMA9'] < last['EMA21'])
+        macd_bearish = last['MACD'] < last['Signal']
+        rsi_overbought = last['RSI'] > 35
+        
+        if ema_death_cross and macd_bearish and rsi_overbought:
+            sl = last['high'] + (last['ATR'] * 1.5)
+            tp = last['close'] - (last['ATR'] * 3)
+            return 'SHORT', last['close'], sl, tp
 
-        long = macd_bullish and in_lower and volume_spike
-        short = not macd_bus
+        return None, None, None, None
+        
+    except Exception as e:
+        logger.error(f"{symbol} | Hata: {str(e)}")
+        return None, None, None, None
+
+def format_telegram_message(symbol, direction, entry, sl, tp):
+    """Telegram mesaj formatlama"""
+    try:
+        clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
+        return f"""
+<b>{clean_symbol} {direction}</b>
+━━━━━━━━━━━━━━
+ Giriş: {entry:,.3f}
+ SL : {sl:,.3f}
+ TP : {tp:,.3f}
+"""
+    except Exception as e:
+        logger.error(f"Mesaj formatlama hatası: {str(e)}")
+        return ""
+
+async def scan_symbols(context: CallbackContext):
+    """Sembol tarama ve sinyal gönderme"""
+    try:
+        symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
+        
+        for symbol in symbols:
+            try:
+                direction, entry, sl, tp = generate_signal(symbol, INTERVAL)
+                if direction and entry:
+                    message = format_telegram_message(symbol, direction, entry, sl, tp)
+                    await context.bot.send_message(chat_id=CHAT_ID, text=message, parse_mode='HTML')
+                    time.sleep(1)  # Rate limit için
+            except Exception as e:
+                logger.error(f"{symbol} tarama hatası: {str(e)}")
+    except Exception as e:
+        logger.error(f"Sembol tarama hatası: {str(e)}")
+
+# **Ana Çalıştırıcı**
+if __name__ == "__main__":
+    application.job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL)
+    application.run_polling()
