@@ -32,9 +32,7 @@ assert tf.__version__ == '2.13.1', f"TensorFlow 2.13.1 gerekli! Mevcut: {tf.__ve
 nest_asyncio.apply()
 
 # Logging Konfigürasyonu
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
+ogging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     handlers=[
         logging.FileHandler('ai_trading.log'),
         logging.StreamHandler()
@@ -72,8 +70,8 @@ exchange = ccxt.binance({
         'defaultType': 'future',
         'createMarketBuyOrderRequiresPrice': False,
     },
-    'aiohttp_trust_env': True,  # Proxy veya çevresel SSL ayarlarını kullan
-    'verify': False,  # SSL doğrulamasını devre dışı bırak
+    'aiohttp_trust_env': True,
+    'verify': False,
 })
 # Sembol Yükleme Fonksiyonu
 def load_usdt_futures_symbols():
@@ -86,7 +84,7 @@ def load_usdt_futures_symbols():
 
 # Global Konfigürasyon
 CONFIG = {
-    'SYMBOLS': ['BTC/USDT', 'ETH/USDT'],  # Geçici olarak sabit liste
+    'SYMBOLS': ['BTC/USDT', 'ETH/USDT'],
     'running': False,
     'RISK_PER_TRADE': 0.01,
 }
@@ -195,7 +193,7 @@ class AIModels:
             model_path = f"/data/models/{symbol.replace('/', '_')}_{model_type.lower()}.keras" if model_type == 'LSTM' else f"/data/models/{symbol.replace('/', '_')}_rf.pkl"
             if os.path.exists(model_path):
                 if model_type == 'LSTM':
-                    model = load_model(model_path)
+                     model = load_model(model_path)
                     for layer in model.layers[:-2]:
                         layer.trainable = False
                     model.fit(X, y, epochs=5, batch_size=64, verbose=0,
@@ -378,8 +376,11 @@ async def main():
         await application.run_polling()
         await asyncio.gather(*tasks)
     except KeyboardInterrupt:
-        logging.info("Bot durduruldu.")
+        logging.info("Bot kullanıcı tarafından durduruldu.")
         await exchange.close()
 
 if __name__ == "__main__":
+    # Windows’ta SelectorEventLoop’u manuel olarak ayarla
+    if os.name == 'nt':  # Windows kontrolü
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
