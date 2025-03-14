@@ -72,7 +72,7 @@ exchange = ccxt.binance({
         'createMarketBuyOrderRequiresPrice': False,
     },
     'session': {
-        'verify': False  # SSL doğrulamasını devre dışı bırak
+        'verify': False  # SSL doğrulamasını geçici olarak devre dışı bırak
     }
 })
 # Sembol Yükleme Fonksiyonu
@@ -86,18 +86,9 @@ def load_usdt_futures_symbols():
 
 # Global Konfigürasyon
 CONFIG = {
-    'SYMBOLS': load_usdt_futures_symbols(),
+    'SYMBOLS': ['BTC/USDT', 'ETH/USDT'],  # Geçici olarak sabit liste
     'running': False,
-    'LEVERAGE': 10,
-    'RISK_PER_TRADE': 0.02,
-    'TIMEFRAMES': ['5m', '15m', '1h', '4h'],
-    'LOOKBACK_WINDOW': 1000,
-    'MODELS': {},
-    'SCALER': StandardScaler(),
-    'chat_ids': set(),
-    'last_signals': {},
-    'performance_history': {},
-    'MIN_ACCURACY': 0.6
+    'RISK_PER_TRADE': 0.01,
 }
 
 # 1. Veri Yönetim Sistemi
@@ -365,20 +356,29 @@ async def broadcast_signal(signal):
 # 8. Ana Program
 async def main():
     os.makedirs('/data/models', exist_ok=True)
-    CONFIG['performance_history'] = {symbol: deque(maxlen=100) for symbol in CONFIG['SYMBOLS']}
+    
+    # Sembolleri dinamik olarak yükle
+    markets = await exchange.load_markets()
+    CONFIG['SYMBOLS'] = list(markets.keys())  # Tüm sembolleri al veya filtrele
+    logging.info(f"Yüklenen semboller: {CONFIG['SYMBOLS'][:5]}")  # İlk 5’i logla
+    
     global application
-    application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
+    token = os.getenv('TELEGRAM_TOKEN')
+    if not token:
+        raise ValueError("TELEGRAM_TOKEN çevresel değişkeni eksik!")
+    application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CommandHandler("stop", stop_bot))
+    
     scheduler = AsyncIOScheduler()
     scheduler.add_job(update_models, 'interval', hours=12)
     scheduler.start()
+    
     tasks = [asyncio.create_task(generate_signals())]
     await application.run_polling()
     await asyncio.gather(*tasks)
 
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
+if __name__ == "__main__":
+    asyncio.run(main())
     except KeyboardInterrupt:
         logging.info("Program kapatıldı.")
