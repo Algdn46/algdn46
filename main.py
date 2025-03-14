@@ -65,15 +65,15 @@ conn.commit()
 conn.close()
 
 # Exchange Konfigürasyonu
+# SSL doğrulamasını devre dışı bırakmak için aiohttp ayarları
 exchange = ccxt.binance({
     'enableRateLimit': True,
     'options': {
         'defaultType': 'future',
         'createMarketBuyOrderRequiresPrice': False,
     },
-    'session': {
-        'verify': False  # SSL doğrulamasını geçici olarak devre dışı bırak
-    }
+    'aiohttp_trust_env': True,  # Proxy veya çevresel SSL ayarlarını kullan
+    'verify': False,  # SSL doğrulamasını devre dışı bırak
 })
 # Sembol Yükleme Fonksiyonu
 def load_usdt_futures_symbols():
