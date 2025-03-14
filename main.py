@@ -142,10 +142,10 @@ def main():
         job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
         # Botu başlat
         try:
-    application = Application.builder().token("TELEGRAM_TOKEN").build()
-    application.run_polling()
-except Exception as e:
-    print(f"Bir hata oluştu: {e}")
+            application = Application.builder().token("TELEGRAM_TOKEN").build()
+            application.run_polling()
+       except Exception as e:
+        print(f"Bir hata oluştu: {e}")
 
 if __name__ == '__main__':
     main()
