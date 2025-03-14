@@ -5,8 +5,9 @@ import time
 import os
 import logging
 from datetime import datetime
-from telegram import Update
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram.ext import Application
+application = Application.builder().token("YOUR_BOT_TOKEN").build()
+
 
 # Config ve Log Ayarları
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
