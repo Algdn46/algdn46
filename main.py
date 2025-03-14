@@ -382,7 +382,6 @@ async def main():
         await exchange.close()
 
 if __name__ == "__main__":
-    # Windows’ta SelectorEventLoop’u manuel olarak ayarla
-    if os.name == 'nt':  # Windows kontrolü
+    if os.name == 'nt':  # Windows için SelectorEventLoop
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     asyncio.run(main())
