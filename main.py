@@ -141,12 +141,11 @@ def main():
         job_queue = updater.job_queue
         job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
         # Botu başlat
-application.run_polling()
-        
-        logger.info("Bot başarıyla başlatıldı")
-        updater.idle()
-    except Exception as e:
-        logger.error(f"Bot başlatma hatası: {str(e)}")
+        try:
+    application = Application.builder().token("TELEGRAM_TOKEN").build()
+    application.run_polling()
+except Exception as e:
+    print(f"Bir hata oluştu: {e}")
 
 if __name__ == '__main__':
     main()
