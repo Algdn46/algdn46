@@ -33,7 +33,9 @@ nest_asyncio.apply()
 
 # Logging Konfigürasyonu
 ogging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    handlers=[
+   # İşleyicileri (handlers) ekle
+    application.add_handler(CommandHandler("start", start_bot))
+    application.add_handler(CommandHandler("stop", stop_bot))
         logging.FileHandler('ai_trading.log'),
         logging.StreamHandler()
     ]
