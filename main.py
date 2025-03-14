@@ -23,7 +23,7 @@ exchange = ccxt.binance({
 # Global Sabitler
 INTERVAL = '5m'
 
-def calculate_technical_indicators(df):
+async def calculate_technical_indicators(df):
     """Basit EMA hesaplamaları ile teknik göstergeler"""
     try:
         closes = df['close'].values
@@ -48,13 +48,13 @@ def calculate_technical_indicators(df):
         logger.error(f"Gösterge hesaplama hatası: {str(e)}")
         return df
 
-def generate_signal(symbol):
+async def generate_signal(symbol):
     """Gelişmiş sinyal üretme mantığı"""
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=100)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        df = calculate_technical_indicators(df)
+        df = await calculate_technical_indicators(df)
         
         if df.empty:
             return None, None, None, None
@@ -84,7 +84,7 @@ def generate_signal(symbol):
         logger.error(f"{symbol} | Hata: {str(e)}")
         return None, None, None, None
 
-def format_telegram_message(symbol, direction, entry, sl, tp):
+async def format_telegram_message(symbol, direction, entry, sl, tp):
     """Telegram mesaj formatlama"""
     try:
         clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
@@ -99,21 +99,21 @@ def format_telegram_message(symbol, direction, entry, sl, tp):
         logger.error(f"Mesaj formatlama hatası: {str(e)}")
         return ""
 
-def scan_symbols(update, context):
+async def scan_symbols(update, context):
     """Sembol tarama ve sinyal gönderme"""
     try:
-        update.message.reply_text("Sinyaller taranıyor, biraz bekle... 🚀")
+        await update.message.reply_text("Sinyaller taranıyor, biraz bekle... 🚀")
         markets = exchange.load_markets()
         symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
         
         found_signal = False
         for symbol in symbols:
             try:
-                direction, entry, sl, tp = generate_signal(symbol)
+                direction, entry, sl, tp = await generate_signal(symbol)
                 if direction and entry:
-                    message = format_telegram_message(symbol, direction, entry, sl, tp)
-                    context.bot.send_message(
-                        chat_id=update.effective_chat.id,  # Mesajı gönderenin chat ID'sine gönder
+                    message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
                         text=message,
                         parse_mode='HTML'
                     )
@@ -123,15 +123,15 @@ def scan_symbols(update, context):
                 logger.error(f"{symbol} tarama hatası: {str(e)}")
         
         if not found_signal:
-            update.message.reply_text("Şu anda geçerli sinyal bulunamadı. Daha sonra tekrar dene!")
+            await update.message.reply_text("Şu anda geçerli sinyal bulunamadı. Daha sonra tekrar dene!")
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}")
-        update.message.reply_text("Bir hata oluştu, tekrar dene!")
+        await update.message.reply_text("Bir hata oluştu, tekrar dene!")
 
-def start(update, context):
+async def start(update, context):
     """Start komutuyla sinyal taramayı başlat"""
-    update.message.reply_text("Woow! 🚀 Kemerini tak dostum, sinyaller geliyor...")
-    scan_symbols(update, context)
+    await update.message.reply_text("Woow! 🚀 Kemerini tak dostum, sinyaller geliyor...")
+    await scan_symbols(update, context)
 
 if __name__ == '__main__':
     # .env dosyasını yükle
