@@ -25,7 +25,6 @@ from collections import deque
 
 # Sürüm Kontrolleri
 assert tf.__version__ == '2.13.1', f"TensorFlow 2.13.1 gerekli! Mevcut: {tf.__version__}"
-from tensorflow import __version__ as tf_version
 
 # Async Çözümü
 nest_asyncio.apply()
@@ -48,19 +47,20 @@ def get_db_connection():
     conn = sqlite3.connect('trading_data.db', check_same_thread=False)
     conn.execute('PRAGMA journal_mode=WAL;')  # Write-Ahead Logging için performans
     return conn
-c = conn.cursor()
 
-# Veritabanı Şeması
+# Şema oluşturma
+conn = get_db_connection()
+c = conn.cursor()
 c.execute('''CREATE TABLE IF NOT EXISTS market_data
              (symbol TEXT, timeframe TEXT, timestamp DATETIME,
               open REAL, high REAL, low REAL, close REAL, volume REAL,
               ema9 REAL, ema21 REAL, rsi REAL, atr REAL,
               PRIMARY KEY (symbol, timeframe, timestamp))''')
-conn.commit()
 c.execute('''CREATE TABLE IF NOT EXISTS model_performance
              (symbol TEXT, model_type TEXT, timestamp DATETIME,
               accuracy REAL, profit REAL)''')
 conn.commit()
+conn.close()
 
 # Exchange Konfigürasyonu
 exchange = ccxt.binance({
@@ -79,8 +79,7 @@ def load_usdt_futures_symbols():
 
 # Global Konfigürasyon
 CONFIG = {
- SYMBOLS = load_usdt_futures_symbols()
-CONFIG['SYMBOLS'] = SYMBOLS      
+    'SYMBOLS': load_usdt_futures_symbols(),
     'running': False,
     'LEVERAGE': 10,
     'RISK_PER_TRADE': 0.02,
@@ -90,7 +89,7 @@ CONFIG['SYMBOLS'] = SYMBOLS
     'SCALER': StandardScaler(),
     'chat_ids': set(),
     'last_signals': {},
-    'performance_history': {symbol: deque(maxlen=100) for symbol in load_usdt_futures_symbols()},
+    'performance_history': {},
     'MIN_ACCURACY': 0.6
 }
 
@@ -121,24 +120,14 @@ class DataManager:
             return None
         finally:
             conn.close()
-           
-# Teknik Göstergeleri İnceleme Fonksiyonu (Yeni Ek - Çakışma Yok)
+
+# Teknik Göstergeleri İnceleme Fonksiyonu
 def analyze_technical_indicators(df: pd.DataFrame) -> dict:
-    """
-    Teknik göstergeleri analiz eder ve durumu açıklar.
-    - EMA Kesişimleri: Trend yönünü belirler.
-    - RSI: Aşırı alım/satım durumlarını kontrol eder.
-    - ATR: Volatilite ve risk seviyelerini değerlendirir.
-    """
     analysis = {}
-    
-    # EMA Analizi
     if df['ema9'].iloc[-1] > df['ema21'].iloc[-1]:
         analysis['trend'] = 'Yükseliş (EMA9 > EMA21)'
     else:
         analysis['trend'] = 'Düşüş (EMA9 < EMA21)'
-    
-    # RSI Analizi
     rsi_latest = df['rsi'].iloc[-1]
     if rsi_latest > 70:
         analysis['rsi'] = f"Aşırı Alım ({rsi_latest:.2f})"
@@ -146,44 +135,35 @@ def analyze_technical_indicators(df: pd.DataFrame) -> dict:
         analysis['rsi'] = f"Aşırı Satım ({rsi_latest:.2f})"
     else:
         analysis['rsi'] = f"Nötr ({rsi_latest:.2f})"
-    
-    # ATR Analizi
     atr_latest = df['atr'].iloc[-1]
     analysis['volatility'] = f"ATR: {atr_latest:.4f} (Yüksek volatilite riskli pozisyonlar için dikkat)"
-    
     return analysis
 
 # 2. Çoklu Zaman Dilimi Özellikleri
 def create_multiframe_features(symbol: str):
+    conn = get_db_connection()
     try:
         feature_frames = []
         for tf in CONFIG['TIMEFRAMES']:
-            df = pd.read_sql(f"""
-                SELECT * FROM market_data 
-                WHERE symbol='{symbol}' AND timeframe='{tf}' 
-                ORDER BY timestamp DESC LIMIT 500
-            """, conn)
-            
+            df = pd.read_sql(
+                "SELECT * FROM market_data WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT 500",
+                conn, params=(symbol, tf)
+            )
             if len(df) < 100:
                 continue
-                
-            # Özellik Mühendisliği
-            # - Teknik göstergeler burada ek özelliklerle zenginleştiriliyor
-            # - Returns, volatilite ve MA oranları modele daha fazla bilgi sağlar
             df['returns'] = df['close'].pct_change()
             df['volatility'] = df['returns'].rolling(20).std()
             df['volume_change'] = df['volume'].pct_change()
-            
             for window in [5, 20, 50]:
                 df[f'ma_{window}'] = df['close'].rolling(window).mean()
                 df[f'ma_ratio_{window}'] = df['close'] / df[f'ma_{window}']
-                
             feature_frames.append(df.add_prefix(f'{tf}_'))
-            
         return pd.concat(feature_frames, axis=1).ffill().dropna()
     except Exception as e:
         logging.error(f"Özellik hatası ({symbol}): {e}")
         return None
+    finally:
+        conn.close()
 
 # 3. AI Model Sistemi
 class AIModels:
@@ -215,7 +195,6 @@ class AIModels:
     async def train_model(symbol: str, model_type: str, X, y):
         try:
             model_path = f"/data/models/{symbol.replace('/', '_')}_{model_type.lower()}.keras" if model_type == 'LSTM' else f"/data/models/{symbol.replace('/', '_')}_rf.pkl"
-            
             if os.path.exists(model_path):
                 if model_type == 'LSTM':
                     model = load_model(model_path)
@@ -239,12 +218,10 @@ class AIModels:
                 else:
                     model = AIModels.build_rf()
                     model.fit(X, y)
-
             if model_type == 'LSTM':
                 model.save(model_path, save_format='keras')
             else:
                 joblib.dump(model, model_path)
-                
             return model
         except Exception as e:
             logging.error(f"Model hatası ({symbol} {model_type}): {e}")
@@ -258,24 +235,23 @@ async def update_models():
             X = create_multiframe_features(symbol)
             if X is None or len(X) < 60:
                 continue
-                
             y = (X.filter(regex='close').iloc[:,0].pct_change().shift(-1) > 0).astype(int)
-            
             seq_length = 60
             X_lstm = np.array([X.values[i-seq_length:i] for i in range(seq_length, len(X))])
             y_lstm = y[seq_length:]
-            
             lstm_model = await AIModels.train_model(symbol, 'LSTM', X_lstm, y_lstm)
             rf_model = await AIModels.train_model(symbol, 'RF', X, y)
-            
             if lstm_model and rf_model:
                 lstm_acc = lstm_model.evaluate(X_lstm, y_lstm, verbose=0)[1]
                 rf_acc = rf_model.score(X, y)
+                conn = get_db_connection()
+                c = conn.cursor()
                 c.execute("INSERT INTO model_performance VALUES (?, ?, ?, ?, ?)",
                          (symbol, 'LSTM', datetime.now(), lstm_acc, 0.0))
                 c.execute("INSERT INTO model_performance VALUES (?, ?, ?, ?, ?)",
                          (symbol, 'RF', datetime.now(), rf_acc, 0.0))
                 conn.commit()
+                conn.close()
         except Exception as e:
             logging.error(f"Güncelleme hatası ({symbol}): {e}")
 
@@ -285,24 +261,19 @@ async def validate_signal(symbol: str) -> bool:
         X = create_multiframe_features(symbol)
         if X is None or len(X) < 60:
             return False
-            
         lstm_model = load_model(f'/data/models/{symbol.replace("/", "_")}_lstm.keras')
         rf_model = joblib.load(f'/data/models/{symbol.replace("/", "_")}_rf.pkl')
-        
         lstm_input = X.iloc[-60:].values.reshape(1, 60, -1)
         lstm_prob = lstm_model.predict(lstm_input, verbose=0)[0][0]
-        
         rf_input = X.iloc[-1:].values.reshape(1, -1)
         rf_prob = rf_model.predict_proba(rf_input)[0][1]
-        
-        # Teknik göstergeler burada dolaylı olarak modele etki ediyor (X üzerinden)
         return (0.6 * lstm_prob + 0.4 * rf_prob) > 0.65
     except Exception as e:
         logging.error(f"Doğrulama hatası ({symbol}): {e}")
         return False
 
 # 6. Sinyal Üretim
-  async def generate_signals():
+async def generate_signals():
     while True:
         if CONFIG['running']:
             logging.info("Sinyal üretimi başladı.")
@@ -311,55 +282,54 @@ async def validate_signal(symbol: str) -> bool:
                 for symbol in batch:
                     conn = get_db_connection()
                     try:
+                        logging.info(f"{symbol} için veri çekiliyor...")
                         await DataManager.fetch_and_store(symbol, '5m')
                         await DataManager.fetch_and_store(symbol, '1h')
-                    df_5m = pd.read_sql(
-                        "SELECT * FROM market_data WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT 100",
-                        conn, params=(symbol, '5m')
-                    )
-                    logging.info(f"{symbol} için {len(df_5m)} satır veri alındı.")
-                    
-                    long_signal = (
-                        df_5m['ema9'].iloc[-2] < df_5m['ema21'].iloc[-2] and
-                        df_5m['ema9'].iloc[-1] > df_5m['ema21'].iloc[-1] and
-                        df_5m['rsi'].iloc[-1] < 65
-                    )
-                    short_signal = (
-                        df_5m['ema9'].iloc[-2] > df_5m['ema21'].iloc[-2] and
-                        df_5m['ema9'].iloc[-1] < df_5m['ema21'].iloc[-1] and
-                        df_5m['rsi'].iloc[-1] > 35
-                    )
-                    logging.info(f"{symbol}: Long: {long_signal}, Short: {short_signal}")
-                    
-                    if not (long_signal or short_signal):
-                        continue
-                    
-                    direction = 'LONG' if long_signal else 'SHORT'
-                    if await validate_signal(symbol):
-                        balance = exchange.fetch_balance()['USDT']['free']
-                        atr = df_5m['atr'].iloc[-1]
-                        entry = df_5m['close'].iloc[-1]
-                        risk_amount = balance * CONFIG['RISK_PER_TRADE']
-                        size = risk_amount / (atr * 1.5)
-                        
-                        signal = {
-                            'symbol': symbol,
-                            'direction': direction,
-                            'entry': round(entry, 4),
-                            'tp': round(entry + (2 * atr) if direction == 'LONG' else entry - (2 * atr), 4),
-                            'sl': round(entry - atr if direction == 'LONG' else entry + atr, 4),
-                            'size': round(size, 4),
-                            'timestamp': datetime.now().isoformat()
-                        }
-                        await broadcast_signal(signal)
-                        logging.info(f"Yeni Sinyal: {signal}")
-                    else:
-                        logging.info(f"{symbol}: Sinyal doğrulanmadı.")
-          except Exception as e:
+                        df_5m = pd.read_sql(
+                            "SELECT * FROM market_data WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT 100",
+                            conn, params=(symbol, '5m')
+                        )
+                        logging.info(f"{symbol} için {len(df_5m)} satır veri alındı.")
+                        long_signal = (
+                            df_5m['ema9'].iloc[-2] < df_5m['ema21'].iloc[-2] and
+                            df_5m['ema9'].iloc[-1] > df_5m['ema21'].iloc[-1] and
+                            df_5m['rsi'].iloc[-1] < 65
+                        )
+                        short_signal = (
+                            df_5m['ema9'].iloc[-2] > df_5m['ema21'].iloc[-2] and
+                            df_5m['ema9'].iloc[-1] < df_5m['ema21'].iloc[-1] and
+                            df_5m['rsi'].iloc[-1] > 35
+                        )
+                        logging.info(f"{symbol}: Long: {long_signal}, Short: {short_signal}")
+                        if not (long_signal or short_signal):
+                            continue
+                        direction = 'LONG' if long_signal else 'SHORT'
+                        if await validate_signal(symbol):
+                            balance = exchange.fetch_balance()['USDT']['free']
+                            atr = df_5m['atr'].iloc[-1]
+                            entry = df_5m['close'].iloc[-1]
+                            risk_amount = balance * CONFIG['RISK_PER_TRADE']
+                            size = risk_amount / (atr * 1.5)
+                            signal = {
+                                'symbol': symbol,
+                                'direction': direction,
+                                'entry': round(entry, 4),
+                                'tp': round(entry + (2 * atr) if direction == 'LONG' else entry - (2 * atr), 4),
+                                'sl': round(entry - atr if direction == 'LONG' else entry + atr, 4),
+                                'size': round(size, 4),
+                                'timestamp': datetime.now().isoformat()
+                            }
+                            await broadcast_signal(signal)
+                            logging.info(f"Yeni Sinyal: {signal}")
+                        else:
+                            logging.info(f"{symbol}: Sinyal doğrulanmadı.")
+                    except Exception as e:
                         logging.error(f"Sinyal hatası ({symbol}): {str(e)}", exc_info=True)
                     finally:
                         conn.close()
                 await asyncio.sleep(10)  # Grup arasında bekleme
+        else:
+            logging.info("Bot durduruldu, sinyal üretimi bekliyor.")
         await asyncio.sleep(300)
 
 # 7. Telegram Entegrasyonu
@@ -389,6 +359,7 @@ async def broadcast_signal(signal):
 # 8. Ana Program
 async def main():
     os.makedirs('/data/models', exist_ok=True)
+    CONFIG['performance_history'] = {symbol: deque(maxlen=100) for symbol in CONFIG['SYMBOLS']}
     global application
     application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
     application.add_handler(CommandHandler("start", start_bot))
