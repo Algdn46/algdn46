@@ -357,10 +357,9 @@ async def broadcast_signal(signal):
 async def main():
     os.makedirs('/data/models', exist_ok=True)
     
-    # Sembolleri dinamik olarak yükle
     markets = await exchange.load_markets()
-    CONFIG['SYMBOLS'] = list(markets.keys())  # Tüm sembolleri al veya filtrele
-    logging.info(f"Yüklenen semboller: {CONFIG['SYMBOLS'][:5]}")  # İlk 5’i logla
+    CONFIG['SYMBOLS'] = list(markets.keys())
+    logging.info(f"Yüklenen semboller: {CONFIG['SYMBOLS'][:5]}")
     
     global application
     token = os.getenv('TELEGRAM_TOKEN')
@@ -375,10 +374,12 @@ async def main():
     scheduler.start()
     
     tasks = [asyncio.create_task(generate_signals())]
-    await application.run_polling()
-    await asyncio.gather(*tasks)
+    try:
+        await application.run_polling()
+        await asyncio.gather(*tasks)
+    except KeyboardInterrupt:
+        logging.info("Bot durduruldu.")
+        await exchange.close()
 
 if __name__ == "__main__":
     asyncio.run(main())
-    except KeyboardInterrupt:
-        logging.info("Program kapatıldı.")
