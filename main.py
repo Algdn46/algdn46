@@ -5,7 +5,7 @@ import time
 import os
 import logging
 from datetime import datetime
-from telegram.ext import Application, CommandHandler, CallbackContext
+from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
 
 # Config ve Log Ayarları
@@ -22,25 +22,21 @@ exchange = ccxt.binance({
 
 # Global Sabitler
 INTERVAL = '5m'
-CHECK_INTERVAL = 300  # 5 dakika
 
 def calculate_technical_indicators(df):
     """Basit EMA hesaplamaları ile teknik göstergeler"""
     try:
         closes = df['close'].values
         
-        # Manuel EMA (9 ve 21) hesaplama
         df['EMA9'] = df['close'].ewm(span=9, adjust=False).mean()
         df['EMA21'] = df['close'].ewm(span=21, adjust=False).mean()
         
-        # Basit RSI (yaklaşık)
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=14).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=14).mean()
-        rs = gain / loss.replace(0, np.finfo(float).eps)  # Sıfıra bölme hatasını önleme
+        rs = gain / loss.replace(0, np.finfo(float).eps)
         df['RSI'] = 100 - (100 / (1 + rs))
         
-        # Basit ATR (yaklaşık)
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -67,7 +63,6 @@ def generate_signal(symbol):
         prev = df.iloc[-2]
 
         ema_cross = (prev['EMA9'] < prev['EMA21']) and (last['EMA9'] > last['EMA21'])
-        macd_bullish = False  # MACD manuel hesaplama zor, şimdilik atladık
         rsi_ok = last['RSI'] < 65
         
         if ema_cross and rsi_ok:
@@ -76,7 +71,6 @@ def generate_signal(symbol):
             return 'LONG', last['close'], sl, tp
 
         ema_death_cross = (prev['EMA9'] > prev['EMA21']) and (last['EMA9'] < last['EMA21'])
-        macd_bearish = False  # MACD manuel hesaplama zor, şimdilik atladık
         rsi_overbought = last['RSI'] > 35
         
         if ema_death_cross and rsi_overbought:
@@ -105,51 +99,54 @@ def format_telegram_message(symbol, direction, entry, sl, tp):
         logger.error(f"Mesaj formatlama hatası: {str(e)}")
         return ""
 
-def scan_symbols(context: CallbackContext):
+def scan_symbols(update, context):
     """Sembol tarama ve sinyal gönderme"""
     try:
+        update.message.reply_text("Sinyaller taranıyor, biraz bekle... 🚀")
         markets = exchange.load_markets()
         symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
         
+        found_signal = False
         for symbol in symbols:
             try:
                 direction, entry, sl, tp = generate_signal(symbol)
                 if direction and entry:
                     message = format_telegram_message(symbol, direction, entry, sl, tp)
                     context.bot.send_message(
-                        chat_id=os.getenv('TELEGRAM_CHAT_ID'),
+                        chat_id=update.effective_chat.id,  # Mesajı gönderenin chat ID'sine gönder
                         text=message,
                         parse_mode='HTML'
                     )
+                    found_signal = True
                     time.sleep(1)
             except Exception as e:
                 logger.error(f"{symbol} tarama hatası: {str(e)}")
+        
+        if not found_signal:
+            update.message.reply_text("Şu anda geçerli sinyal bulunamadı. Daha sonra tekrar dene!")
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}")
+        update.message.reply_text("Bir hata oluştu, tekrar dene!")
 
 def start(update, context):
-    update.message.reply_text("woow! 🚀 Kemerini tak dostum")
+    """Start komutuyla sinyal taramayı başlat"""
+    update.message.reply_text("Woow! 🚀 Kemerini tak dostum, sinyaller geliyor...")
+    scan_symbols(update, context)
 
 if __name__ == '__main__':
     # .env dosyasını yükle
     load_dotenv("config.env")
 
-    # Token'ı ve chat ID'yi ortam değişkenlerinden al
+    # Token'ı ortam değişkeninden al
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
         logger.error("TELEGRAM_TOKEN bulunamadı!")
-        exit(1)
-
-    chat_id = os.getenv("TELEGRAM_CHAT_ID")
-    if not chat_id:
-        logger.error("TELEGRAM_CHAT_ID bulunamadı!")
         exit(1)
 
     # Botu başlat
     try:
         application = Application.builder().token(token).build()
         application.add_handler(CommandHandler("start", start))
-        application.job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
         application.run_polling()
     except Exception as e:
         logger.error(f"Bot başlatma hatası: {str(e)}")
