@@ -4,6 +4,7 @@ import numpy as np
 import time
 import os
 import logging
+import asyncio
 from datetime import datetime
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
@@ -17,6 +18,7 @@ exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
     'enableRateLimit': True,
+    'rateLimit': 1000,  # 1 saniye delay ekleyerek rate limit aşımını önle
     'options': {'defaultType': 'future'}
 })
 
@@ -45,7 +47,7 @@ async def calculate_technical_indicators(df):
         
         return df.dropna()
     except Exception as e:
-        logger.error(f"Gösterge hesaplama hatası: {str(e)}")
+        logger.error(f"Gösterge hesaplama hatası: {str(e)}", exc_info=True)
         return df
 
 async def generate_signal(symbol):
@@ -81,7 +83,7 @@ async def generate_signal(symbol):
         return None, None, None, None
         
     except Exception as e:
-        logger.error(f"{symbol} | Hata: {str(e)}")
+        logger.error(f"{symbol} | Hata: {str(e)}", exc_info=True)
         return None, None, None, None
 
 async def format_telegram_message(symbol, direction, entry, sl, tp):
@@ -96,14 +98,25 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
 🎯 TP : {tp:,.3f}".replace(".000", "")
 """
     except Exception as e:
-        logger.error(f"Mesaj formatlama hatası: {str(e)}")
+        logger.error(f"Mesaj formatlama hatası: {str(e)}", exc_info=True)
         return ""
 
 async def scan_symbols(update, context):
     """Sembol tarama ve sinyal gönderme"""
     try:
         await update.message.reply_text("Sinyaller taranıyor, biraz bekle... 🚀")
-        markets = exchange.load_markets()
+        for attempt in range(3):
+            try:
+                markets = exchange.load_markets()
+                break
+            except Exception as e:
+                logger.error(f"load_markets attempt {attempt + 1} failed: {str(e)}", exc_info=True)
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                else:
+                    await update.message.reply_text("Binance verileri yüklenemedi, tekrar dene!")
+                    return
+        
         symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
         
         found_signal = False
@@ -118,14 +131,14 @@ async def scan_symbols(update, context):
                         parse_mode='HTML'
                     )
                     found_signal = True
-                    time.sleep(1)
+                    time.sleep(1)  # Telegram rate limitine takılmamak için
             except Exception as e:
-                logger.error(f"{symbol} tarama hatası: {str(e)}")
+                logger.error(f"{symbol} tarama hatası: {str(e)}", exc_info=True)
         
         if not found_signal:
             await update.message.reply_text("Şu anda geçerli sinyal bulunamadı. Daha sonra tekrar dene!")
     except Exception as e:
-        logger.error(f"Genel tarama hatası: {str(e)}")
+        logger.error(f"Genel tarama hatası: {str(e)}", exc_info=True)
         await update.message.reply_text("Bir hata oluştu, tekrar dene!")
 
 async def start(update, context):
@@ -147,6 +160,7 @@ if __name__ == '__main__':
     try:
         application = Application.builder().token(token).build()
         application.add_handler(CommandHandler("start", start))
+        logger.info("Bot başlatılıyor...")
         application.run_polling()
     except Exception as e:
-        logger.error(f"Bot başlatma hatası: {str(e)}")
+        logger.error(f"Bot başlatma hatası: {str(e)}", exc_info=True)
