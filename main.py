@@ -132,7 +132,7 @@ def start(update, context):
 
 if __name__ == '__main__':
     # .env dosyasını yükle
-    load_dotenv()
+    load_dotenv(config.env)
 
     # Token'ı ve chat ID'yi ortam değişkenlerinden al
     token = os.getenv("TELEGRAM_TOKEN")
