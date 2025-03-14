@@ -144,8 +144,8 @@ def main():
         try:
             application = Application.builder().token("TELEGRAM_TOKEN").build()
             application.run_polling()
-       except Exception as e:
-        print(f"Bir hata oluştu: {e}")
+        except Exception as e:
+            print(f"Bir hata oluştu: {e}")
 
 if __name__ == '__main__':
     main()
