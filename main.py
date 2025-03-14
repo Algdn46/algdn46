@@ -44,7 +44,10 @@ logging.basicConfig(
 load_dotenv('config.env')
 
 # Veritabanı Bağlantısı
-conn = sqlite3.connect('trading_data.db', check_same_thread=False)
+def get_db_connection():
+    conn = sqlite3.connect('trading_data.db', check_same_thread=False)
+    conn.execute('PRAGMA journal_mode=WAL;')  # Write-Ahead Logging için performans
+    return conn
 c = conn.cursor()
 
 # Veritabanı Şeması
@@ -76,7 +79,8 @@ def load_usdt_futures_symbols():
 
 # Global Konfigürasyon
 CONFIG = {
-    'SYMBOLS': load_usdt_futures_symbols(),
+ SYMBOLS = load_usdt_futures_symbols()
+CONFIG['SYMBOLS'] = SYMBOLS      
     'running': False,
     'LEVERAGE': 10,
     'RISK_PER_TRADE': 0.02,
@@ -94,19 +98,16 @@ CONFIG = {
 class DataManager:
     @staticmethod
     async def fetch_and_store(symbol: str, timeframe: str):
+        conn = get_db_connection()
+        c = conn.cursor()
         try:
             ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=1000)
             df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
             df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-            # Teknik Göstergeler (TALib ile hesaplanıyor)
-            # - EMA9 ve EMA21: Trend yönünü belirlemek için kısa ve orta vadeli hareketli ortalamalar
-            # - RSI: Aşırı alım/satım durumlarını filtrelemek için (14 periyot)
-            # - ATR: Volatilite ölçümü ve risk yönetimi için (14 periyot)
             df['ema9'] = talib.EMA(df['close'], timeperiod=9)
             df['ema21'] = talib.EMA(df['close'], timeperiod=21)
             df['rsi'] = talib.RSI(df['close'], timeperiod=14)
             df['atr'] = talib.ATR(df['high'], df['low'], df['close'], timeperiod=14)
-            # Veritabanına Kaydetme
             for _, row in df.iterrows():
                 c.execute('''INSERT OR REPLACE INTO market_data 
                              (symbol, timeframe, timestamp, open, high, low, close, volume, ema9, ema21, rsi, atr) 
@@ -116,9 +117,11 @@ class DataManager:
             conn.commit()
             return df.dropna()
         except Exception as e:
-            logging.error(f"Veri hatası ({symbol} {timeframe}): {e}")
+            logging.error(f"Veri hatası ({symbol} {timeframe}): {str(e)}", exc_info=True)
             return None
-
+        finally:
+            conn.close()
+           
 # Teknik Göstergeleri İnceleme Fonksiyonu (Yeni Ek - Çakışma Yok)
 def analyze_technical_indicators(df: pd.DataFrame) -> dict:
     """
@@ -299,21 +302,21 @@ async def validate_signal(symbol: str) -> bool:
         return False
 
 # 6. Sinyal Üretim
-async def generate_signals():
+  async def generate_signals():
     while True:
         if CONFIG['running']:
             logging.info("Sinyal üretimi başladı.")
-            for symbol in CONFIG['SYMBOLS']:
-                try:
-                    logging.info(f"{symbol} için veri çekiliyor...")
-                    await DataManager.fetch_and_store(symbol, '5m')
-                    await DataManager.fetch_and_store(symbol, '1h')
-                    
-                    df_5m = pd.read_sql(f"""
-                        SELECT * FROM market_data 
-                        WHERE symbol='{symbol}' AND timeframe='5m' 
-                        ORDER BY timestamp DESC LIMIT 100
-                    """, conn)
+            for i in range(0, len(CONFIG['SYMBOLS']), 5):  # 5'li gruplar
+                batch = CONFIG['SYMBOLS'][i:i+5]
+                for symbol in batch:
+                    conn = get_db_connection()
+                    try:
+                        await DataManager.fetch_and_store(symbol, '5m')
+                        await DataManager.fetch_and_store(symbol, '1h')
+                    df_5m = pd.read_sql(
+                        "SELECT * FROM market_data WHERE symbol=? AND timeframe=? ORDER BY timestamp DESC LIMIT 100",
+                        conn, params=(symbol, '5m')
+                    )
                     logging.info(f"{symbol} için {len(df_5m)} satır veri alındı.")
                     
                     long_signal = (
@@ -352,10 +355,11 @@ async def generate_signals():
                         logging.info(f"Yeni Sinyal: {signal}")
                     else:
                         logging.info(f"{symbol}: Sinyal doğrulanmadı.")
-                except Exception as e:
-                    logging.error(f"Sinyal hatası ({symbol}): {e}")
-        else:
-            logging.info("Bot durduruldu, sinyal üretimi bekliyor.")
+          except Exception as e:
+                        logging.error(f"Sinyal hatası ({symbol}): {str(e)}", exc_info=True)
+                    finally:
+                        conn.close()
+                await asyncio.sleep(10)  # Grup arasında bekleme
         await asyncio.sleep(300)
 
 # 7. Telegram Entegrasyonu
@@ -385,22 +389,19 @@ async def broadcast_signal(signal):
 # 8. Ana Program
 async def main():
     os.makedirs('/data/models', exist_ok=True)
-    
     global application
     application = Application.builder().token(os.getenv('TELEGRAM_TOKEN')).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CommandHandler("stop", stop_bot))
-    
     scheduler = AsyncIOScheduler()
     scheduler.add_job(update_models, 'interval', hours=12)
     scheduler.start()
-    
     tasks = [asyncio.create_task(generate_signals())]
     await application.run_polling()
     await asyncio.gather(*tasks)
-    
-    await application.run_polling()
-conn.close() 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logging.info("Program kapatıldı.")
