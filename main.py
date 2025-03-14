@@ -1,4 +1,6 @@
-import ccxt
+import ccxt.async_support as ccxt
+import ssl
+import certifi
 import pandas as pd
 import numpy as np
 import asyncio
@@ -65,9 +67,14 @@ conn.close()
 # Exchange Konfigürasyonu
 exchange = ccxt.binance({
     'enableRateLimit': True,
-    'options': {'defaultType': 'future'}
+    'options': {
+        'defaultType': 'future',
+        'createMarketBuyOrderRequiresPrice': False,
+    },
+    'session': {
+        'verify': False  # SSL doğrulamasını devre dışı bırak
+    }
 })
-
 # Sembol Yükleme Fonksiyonu
 def load_usdt_futures_symbols():
     try:
@@ -334,13 +341,12 @@ async def generate_signals():
 
 # 7. Telegram Entegrasyonu
 async def start_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    CONFIG['chat_ids'].add(update.message.chat_id)
     CONFIG['running'] = True
-    await update.message.reply_text("Trading Bot aktif!")
+    await update.message.reply_text("Botcuk aktif!")
 
 async def stop_bot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     CONFIG['running'] = False
-    await update.message.reply_text("Trading Bot durduruldu.")
+    await update.message.reply_text("Bot buna üzüldü.")
 
 async def broadcast_signal(signal):
     for chat_id in CONFIG['chat_ids']:
