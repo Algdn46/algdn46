@@ -5,10 +5,8 @@ import time
 import os
 import logging
 from datetime import datetime
-from telegram.ext import Application
-from telegram.ext import CommandHandler
-application = Application.builder().token("YOUR_BOT_TOKEN").build()
-
+from telegram.ext import Application, CommandHandler, CallbackContext
+from dotenv import load_dotenv
 
 # Config ve Log Ayarları
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -129,24 +127,29 @@ def scan_symbols(context: CallbackContext):
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}")
 
-
 def start(update, context):
     update.message.reply_text("woow! 🚀 Kemerini tak dostum")
 
-def main():
-    try:
-        updater = Updater(os.getenv('TELEGRAM_TOKEN'))
-        application.add_handler(CommandHandler("start", start))
-        
-        job_queue = updater.job_queue
-        job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
-
-# Botu başlat
-try:
-    application = Application.builder().token(token).build()
-    application.run_polling()
-except Exception as e:
-    print(f"Bir hata oluştu: {e}")
-
 if __name__ == '__main__':
-    print("Bot çalışıyor")
+    # .env dosyasını yükle
+    load_dotenv()
+
+    # Token'ı ve chat ID'yi ortam değişkenlerinden al
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        logger.error("TELEGRAM_TOKEN bulunamadı!")
+        exit(1)
+
+    chat_id = os.getenv("TELEGRAM_CHAT_ID")
+    if not chat_id:
+        logger.error("TELEGRAM_CHAT_ID bulunamadı!")
+        exit(1)
+
+    # Botu başlat
+    try:
+        application = Application.builder().token(token).build()
+        application.add_handler(CommandHandler("start", start))
+        application.job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Bot başlatma hatası: {str(e)}")
