@@ -34,10 +34,13 @@ nest_asyncio.apply()
 # Logging Konfigürasyonu
 ogging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
    # İşleyicileri (handlers) ekle
+    global application
+    token = os.getenv('TELEGRAM_TOKEN')
+    if not token:
+        raise ValueError("TELEGRAM_TOKEN çevresel değişkeni eksik!")
+    application = Application.builder().token(token).build()
     application.add_handler(CommandHandler("start", start_bot))
     application.add_handler(CommandHandler("stop", stop_bot))
-        logging.FileHandler('ai_trading.log'),
-        logging.StreamHandler()
     ]
 )
 
