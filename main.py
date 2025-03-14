@@ -1,5 +1,4 @@
 import ccxt
-import openai
 import sqlite3
 import telebot
 import time
