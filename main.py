@@ -6,6 +6,7 @@ import os
 import logging
 from datetime import datetime
 from telegram.ext import Application
+from telegram.ext import CommandHandler
 application = Application.builder().token("YOUR_BOT_TOKEN").build()
 
 
@@ -128,18 +129,20 @@ def scan_symbols(context: CallbackContext):
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}")
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text('🚀 Futures Sinyal Botu Aktif!')
+
+def start(update, context):
+    update.message.reply_text("woow! 🚀 Kemerini tak dostum")
 
 def main():
     try:
         updater = Updater(os.getenv('TELEGRAM_TOKEN'))
-        updater.dispatcher.add_handler(CommandHandler('start', start))
+        application.add_handler(CommandHandler("start", start))
         
         job_queue = updater.job_queue
         job_queue.run_repeating(scan_symbols, interval=CHECK_INTERVAL, first=10)
+        # Botu başlat
+application.run_polling()
         
-        updater.start_polling()
         logger.info("Bot başarıyla başlatıldı")
         updater.idle()
     except Exception as e:
