@@ -1,4 +1,4 @@
-import ccxt
+import ccxt  # sürüm zorunluluğunu gecersiz kıl
 import pandas as pd
 import numpy as np
 import time
@@ -9,7 +9,7 @@ from datetime import datetime
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
 import requests
-
+import ssl # ssl çalişmasa dahi zorunlu kıl
 
 # Config ve Log Ayarları
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
