@@ -1,4 +1,3 @@
-import ssl
 import ccxt
 import pandas as pd
 import numpy as np
@@ -9,21 +8,34 @@ import asyncio
 from datetime import datetime
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
+import requests
+
 
 # Config ve Log Ayarları
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Özel bir requests Session oluştur
+session = requests.Session()
+session.mount('https://', requests.adapters.HTTPAdapter(
+    pool_connections=10,
+    pool_maxsize=10,
+    max_retries=3
+))
+# TLS sürümünü modern bir şekilde ayarla (minimum TLS 1.2)
+session.verify = True
+adapter = session.adapters['https://']
+adapter.ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+adapter.ssl_context.minimum_version = ssl.TLSVersion.TLSv1_2
 
 # Binance Futures API Konfigürasyonu
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
     'enableRateLimit': True,
-    'rateLimit': 1000,
+    'rateLimit': 1000,  # 1 saniye delay
     'options': {'defaultType': 'future'},
-    'session': {
-        'context': ssl.SSLContext(ssl.PROTOCOL_TLSv1_2)  # TLS 1.2 kullan
-    }
+    'session': session  # Doğru session nesnesini ekle
 })
 
 # Global Sabitler
