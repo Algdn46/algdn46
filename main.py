@@ -1,4 +1,4 @@
-import ccxt  # sürüm zorunluluğunu gecersiz kıl
+
 import pandas as pd
 import numpy as np
 import time
@@ -9,7 +9,26 @@ from datetime import datetime
 from telegram.ext import Application, CommandHandler
 from dotenv import load_dotenv
 import requests
-import ssl # ssl çalişmasa dahi zorunlu kıl
+import ssl 
+import requests
+import ssl
+from urllib3.util.ssl_ import create_urllib3_context
+from ccxt import binance
+
+# Özel TLS yapılandırması
+context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
+context.set_ciphers("TLS_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+session = requests.Session()
+adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
+session.mount("https://", adapter)
+session.verify = True
+
+# Binance exchange nesnesini oluştururken session’ı kullan
+exchange = binance({
+    "session": session,
+    "enableRateLimit": True,
+})
+
 
 # Config ve Log Ayarları
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
