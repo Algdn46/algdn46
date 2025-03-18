@@ -37,6 +37,10 @@ logger = logging.getLogger(__name__)
 
 # Global Sabitler
 INTERVAL = '5m'
+RISK_RATIO = 0.2  # Risk oranını %0.2'ye yükselttim
+
+# Son sinyalleri takip etmek için bir sözlük
+last_signals = {}
 
 async def calculate_technical_indicators(df):
     try:
@@ -74,19 +78,19 @@ async def generate_signal(symbol):
         prev = df.iloc[-2]
 
         ema_cross = (prev['EMA9'] < prev['EMA21']) and (last['EMA9'] > last['EMA21'])
-        rsi_ok = last['RSI'] < 65
+        rsi_ok = last['RSI'] < 70  # RSI koşulunu gevşettik
         
         if ema_cross and rsi_ok:
-            sl = last['low'] - (last['ATR'] * 1.5)
-            tp = last['close'] + (last['ATR'] * 3)
+            sl = last['low'] - (last['ATR'] * RISK_RATIO)
+            tp = last['close'] + (last['ATR'] * RISK_RATIO * 1.5)
             return 'LONG', last['close'], sl, tp
 
         ema_death_cross = (prev['EMA9'] > prev['EMA21']) and (last['EMA9'] < last['EMA21'])
-        rsi_overbought = last['RSI'] > 35
+        rsi_overbought = last['RSI'] > 30  # RSI koşulunu gevşettik
         
         if ema_death_cross and rsi_overbought:
-            sl = last['high'] + (last['ATR'] * 1.5)
-            tp = last['close'] - (last['ATR'] * 3)
+            sl = last['high'] + (last['ATR'] * RISK_RATIO)
+            tp = last['close'] - (last['ATR'] * RISK_RATIO * 1.5)
             return 'SHORT', last['close'], sl, tp
 
         return None, None, None, None
@@ -96,14 +100,15 @@ async def generate_signal(symbol):
 
 async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
-        clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
-        direction_text = "LONG (🔼)" if direction == "LONG" else "SHORT (🔻)"
+        # Sembolü sadeleştir (USDT ile biten format)
+        clean_symbol = symbol.replace(':USDT-', '/USDT').split('/')[0] + '/USDT'
+        color = '<span style="color:green">Long</span>' if direction == 'LONG' else '<span style="color:red">Short</span>'
         message = f"""
-🚦✈️ {clean_symbol} {direction_text}
+🚦✈️ {clean_symbol} {color}
 ━━━━━━━━━━━━━━
-🪂 Giriş: {entry:,.3f}".replace(".000", "")
-🚫 SL: {sl:,.3f}".replace(".000", "")
-🎯 TP: {tp:,.3f}".replace(".000", "")
+🪂 Giriş: {entry:.3f}
+🚫 SL: {sl:.3f}
+🎯 TP: {tp:.3f}
 """
         return message
     except Exception as e:
@@ -132,14 +137,17 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
             try:
                 direction, entry, sl, tp = await generate_signal(symbol)
                 if direction and entry:
-                    message = await format_telegram_message(symbol, direction, entry, sl, tp)
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                    found_signal = True
-                    time.sleep(1)
+                    current_signal = (direction, entry, sl, tp)
+                    if symbol not in last_signals or last_signals[symbol] != current_signal:
+                        message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=message,
+                            parse_mode='HTML'
+                        )
+                        last_signals[symbol] = current_signal
+                        found_signal = True
+                        time.sleep(1)
             except Exception as e:
                 logger.error(f"{symbol} tarama hatası: {str(e)}", exc_info=True)
         
@@ -150,9 +158,9 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
         await context.bot.send_message(chat_id=chat_id, text="Bir hata oluştu, tekrar dene!")
 
 async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
+    chat_id = context.bot_data.get('chat_id')
     while True:
         try:
-            chat_id = context.job.chat_id
             logger.info("Sürekli sinyal tarama başlıyor...")
             markets = exchange.load_markets()
             symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
@@ -160,14 +168,17 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             for symbol in symbols:
                 direction, entry, sl, tp = await generate_signal(symbol)
                 if direction and entry:
-                    message = await format_telegram_message(symbol, direction, entry, sl, tp)
-                    await context.bot.send_message(
-                        chat_id=chat_id,
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                    found_signal = True
-                    time.sleep(1)
+                    current_signal = (direction, entry, sl, tp)
+                    if symbol not in last_signals or last_signals[symbol] != current_signal:
+                        message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=message,
+                            parse_mode='HTML'
+                        )
+                        last_signals[symbol] = current_signal
+                        found_signal = True
+                        time.sleep(1)
             if not found_signal:
                 logger.info("Sinyal bulunamadı, 60 saniye bekleniyor...")
             await asyncio.sleep(60)
@@ -176,10 +187,11 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(60)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
     chat_id = update.effective_chat.id
-    context.job_queue.run_once(lambda _: asyncio.create_task(scan_symbols(context, chat_id)), 0)
-    context.job_queue.run_repeating(continuous_scan, interval=60, first=5, chat_id=chat_id)
+    context.bot_data['chat_id'] = chat_id
+    await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
+    await scan_symbols(context, chat_id)
+    context.job_queue.run_repeating(continuous_scan, interval=60, first=5)
 
 def main():
     load_dotenv("config.env")
