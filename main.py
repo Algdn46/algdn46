@@ -97,12 +97,12 @@ async def generate_signal(symbol):
 async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
         clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
-        direction_text = "LONG (Yeşil)" if direction == "LONG" else "SHORT (Kırmızı)"
+        direction_text = "LONG (🔼)" if direction == "LONG" else "SHORT (🔻)"
         message = f"""
 📈 {clean_symbol} {direction_text}
 ━━━━━━━━━━━━━━
-🎯 Giriş: {entry:,.3f}".replace(".000", "")
-🛑 SL: {sl:,.3f}".replace(".000", "")
+🪂 Giriş: {entry:,.3f}".replace(".000", "")
+🚫 SL: {sl:,.3f}".replace(".000", "")
 🎯 TP: {tp:,.3f}".replace(".000", "")
 """
         return message
@@ -144,7 +144,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
                 logger.error(f"{symbol} tarama hatası: {str(e)}", exc_info=True)
         
         if not found_signal:
-            await context.bot.send_message(chat_id=chat_id, text="Şu anda geçerli sinyal bulunamadı. Daha sonra tekrar dene!")
+            await context.bot.send_message(chat_id=chat_id, text="Sinyal bulunamadı ede. Az sabret.")
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}", exc_info=True)
         await context.bot.send_message(chat_id=chat_id, text="Bir hata oluştu, tekrar dene!")
@@ -176,7 +176,7 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(60)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Woow! 🚀 Kemerini tak dostum, sinyaller geliyor...")
+    await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
     chat_id = update.effective_chat.id
     context.job_queue.run_once(lambda _: asyncio.create_task(scan_symbols(context, chat_id)), 0)
     context.job_queue.run_repeating(continuous_scan, interval=60, first=5, chat_id=chat_id)
