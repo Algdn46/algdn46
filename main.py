@@ -1,4 +1,3 @@
-
 import pandas as pd
 import numpy as np
 import time
@@ -126,7 +125,8 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
         clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
         return f"""
-📈 {clean_symbol} <span style="color: {'#00ff00' if direction == 'LONG' else '#ff0000'}"><b>{direction}</b></span>
+📈 direction_text = "LONG (Yeşil)" if direction == "LONG" else "SHORT (Kırmızı)"
+await context.bot.send_message(chat_id=chat_id, text=f"{clean_symbol} {direction_text}", parse_mode='Markdown')
 ━━━━━━━━━━━━━━
 🎯 Giriş: {entry:,.3f}".replace(".000", "")
 🛑 SL : {sl:,.3f}".replace(".000", "")
