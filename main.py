@@ -1,4 +1,4 @@
-from ccxt import binance
+import ccxt
 import pandas as pd
 import numpy as np
 import time
@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 import requests
 import ssl 
 from urllib3.util.ssl_ import create_urllib3_context
-
+from ccxt import binance
 
 # Özel TLS yapılandırması
 context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
