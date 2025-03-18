@@ -99,7 +99,7 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
         clean_symbol = symbol.replace(':USDT', '').replace(':BTC', '').replace(':ETH', '').replace(':BUSD', '')
         direction_text = "LONG (🔼)" if direction == "LONG" else "SHORT (🔻)"
         message = f"""
-📈 {clean_symbol} {direction_text}
+🚦✈️ {clean_symbol} {direction_text}
 ━━━━━━━━━━━━━━
 🪂 Giriş: {entry:,.3f}".replace(".000", "")
 🚫 SL: {sl:,.3f}".replace(".000", "")
