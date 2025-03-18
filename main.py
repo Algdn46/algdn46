@@ -16,7 +16,7 @@ from ccxt import binance
 
 # Özel TLS yapılandırması
 context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
-context.set_ciphers("TLS_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384")
+context.set_ciphers("DEFAULT")  # Sistem varsayılan şifrelerini kullan
 session = requests.Session()
 adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
 session.mount("https://", adapter)
