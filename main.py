@@ -92,6 +92,9 @@ TP1_PERCENT = 0.015  # %1.5 yukarıda
 TP2_PERCENT = 0.025  # %2.5 yukarıda
 TP3_PERCENT = 0.035  # %3.5 yukarıda
 
+# Yalnızca bu gruba sinyal gönderilecek (grubunun chat_id değerini buraya yaz)
+ALLOWED_GROUP_CHAT_ID = -123456789  # BURAYI GRUBUN chat_id DEĞERİYLE GÜNCELLE
+
 # Haber takibi için fonksiyon
 def fetch_crypto_news():
     try:
@@ -195,14 +198,79 @@ def train_lstm_model(symbol, retrain=False):
         logger.error(f"LSTM modeli eğitme hatası: {str(e)}")
         return None, None
 
-# Fiyatları yuvarlama fonksiyonu
-def round_price(price, symbol):
-    if 'BTC' in symbol:
-        return round(price, 3)
-    elif 'ETH' in symbol:
-        return round(price, 1)
+# Fiyatı formatlama fonksiyonu
+def format_price(price, symbol):
+    # Fiyat 1 USDT'den büyükse
+    if price >= 1:
+        # Fiyatı 1000'e böl
+        price_divided = price / 1000
+        # Sembole göre yuvarlama
+        if 'BTC' in symbol:
+            price_divided = round(price_divided, 3)
+        elif 'ETH' in symbol:
+            price_divided = round(price_divided, 2)
+        else:
+            price_divided = round(price_divided, 3)
+        # Binlik ayracı olarak nokta ekle
+        price_str = f"{price_divided:,.3f}".replace(",", ".")
+        # Gereksiz sıfırları kaldır
+        if '.' in price_str:
+            price_str = price_str.rstrip('0').rstrip('.')
+        return price_str
+    # Fiyat 1 USDT'den küçükse
     else:
-        return round(price, 3)
+        # 4 anlamlı basamak (significant digits) olacak şekilde formatla
+        price_str = f"{price:.10f}"
+        # İlk sıfır olmayan rakamı bul
+        significant_digits = 0
+        result = ""
+        found_non_zero = False
+        for char in price_str:
+            if char == '.':
+                result += char
+                continue
+            if char != '0' and not found_non_zero:
+                found_non_zero = True
+            if found_non_zero:
+                significant_digits += 1
+            result += char
+            if significant_digits == 4:
+                break
+        # Gereksiz sıfırları kaldır
+        if '.' in result:
+            result = result.rstrip('0').rstrip('.')
+        return result
+
+# Fiyatları yuvarlama fonksiyonu (hesaplama için)
+def round_price(price, symbol):
+    if price >= 1:
+        # Fiyatı 1000'e böl
+        price_divided = price / 1000
+        # Sembole göre yuvarlama
+        if 'BTC' in symbol:
+            return round(price_divided, 3)
+        elif 'ETH' in symbol:
+            return round(price_divided, 2)
+        else:
+            return round(price_divided, 3)
+    else:
+        # 4 anlamlı basamak için yuvarlama
+        price_str = f"{price:.10f}"
+        significant_digits = 0
+        result = ""
+        found_non_zero = False
+        for char in price_str:
+            if char == '.':
+                result += char
+                continue
+            if char != '0' and not found_non_zero:
+                found_non_zero = True
+            if found_non_zero:
+                significant_digits += 1
+            result += char
+            if significant_digits == 4:
+                break
+        return float(result.rstrip('0').rstrip('.'))
 
 async def generate_signal(symbol, model, scaler, news_sentiment):
     try:
@@ -241,6 +309,8 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             last_signal = last_signals[symbol]
             last_direction, last_entry, last_sl, last_tp = last_signal
             last_tp3 = last_tp[2]
+            if current_price >= 1:
+                last_tp3 *= 1000  # 1000 ile çarp (çünkü 1000'e bölmüştük)
             
             if predicted_price > current_price * 1.002 and last_direction == 'LONG':
                 if current_price < last_tp3:
@@ -267,11 +337,11 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             tp2 = current_price * (1 + TP2_PERCENT)
             tp3 = current_price * (1 + TP3_PERCENT)
             
-            entry = round_price(current_price, symbol)
-            sl = round_price(sl, symbol)
-            tp1 = round_price(tp1, symbol)
-            tp2 = round_price(tp2, symbol)
-            tp3 = round_price(tp3, symbol)
+            entry = current_price
+            sl = sl
+            tp1 = tp1
+            tp2 = tp2
+            tp3 = tp3
             
             logger.info(f"{symbol} | LONG sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'LONG', entry, sl, (tp1, tp2, tp3)
@@ -282,11 +352,11 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             tp2 = current_price * (1 - TP2_PERCENT)
             tp3 = current_price * (1 - TP3_PERCENT)
             
-            entry = round_price(current_price, symbol)
-            sl = round_price(sl, symbol)
-            tp1 = round_price(tp1, symbol)
-            tp2 = round_price(tp2, symbol)
-            tp3 = round_price(tp3, symbol)
+            entry = current_price
+            sl = sl
+            tp1 = tp1
+            tp2 = tp2
+            tp3 = tp3
             
             logger.info(f"{symbol} | SHORT sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'SHORT', entry, sl, (tp1, tp2, tp3)
@@ -302,14 +372,22 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
         clean_symbol = symbol.split('/')[0] + '/USDT'
         direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'
         tp1, tp2, tp3 = tp
+        
+        # Fiyatları formatla
+        entry_formatted = format_price(entry, symbol)
+        sl_formatted = format_price(sl, symbol)
+        tp1_formatted = format_price(tp1, symbol)
+        tp2_formatted = format_price(tp2, symbol)
+        tp3_formatted = format_price(tp3, symbol)
+        
         message = f"""
 🚦✈️ {clean_symbol} {direction_text}
 ━━━━━━━━━━━━━━
-🪂 Giriş: {entry}
-🚫 SL: {sl}
-🎯 TP1: {tp1}
-🎯 TP2: {tp2}
-🎯 TP3: {tp3}
+🪂 Giriş: {entry_formatted}
+🚫 SL: {sl_formatted}
+🎯 TP1: {tp1_formatted}
+🎯 TP2: {tp2_formatted}
+🎯 TP3: {tp3_formatted}
 🕒 Zaman: {datetime.now(TR_TIMEZONE).strftime('%H:%M')}
 """
         return message
@@ -317,19 +395,20 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
         logger.error(f"Mesaj formatlama hatası: {str(e)}")
         return "Mesaj formatlama hatası oluştu!"
 
-async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models: dict, scalers: dict):
+async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, models: dict, scalers: dict):
     try:
         logger.info("Sinyaller taranıyor...")
         for attempt in range(3):
             try:
                 markets = exchange.load_markets()
+                logger.info("Markets başarıyla yüklendi.")
                 break
             except Exception as e:
                 logger.error(f"load_markets attempt {attempt + 1} failed: {str(e)}")
                 if attempt < 2:
                     await asyncio.sleep(2)
                 else:
-                    await context.bot.send_message(chat_id=chat_id, text="Binance verileri yüklenemedi, tekrar dene!")
+                    await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Binance verileri yüklenemedi, tekrar dene!")
                     return
         
         # Haberleri çek ve analiz et
@@ -343,6 +422,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
             logger.info(f"En fazla yükselen coin: {top_gainer}")
         
         symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
+        logger.info(f"Taranacak sembol sayısı: {len(symbols)}")
         
         # Önce en fazla yükselen coini tara
         found_signal = False
@@ -361,12 +441,13 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     message = await format_telegram_message(top_gainer, direction, entry, sl, tp)
+                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
                     await context.bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=ALLOWED_GROUP_CHAT_ID,
                         text=message,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Sinyal gönderildi: {message}")
+                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
                     last_signals[top_gainer] = current_signal
                     last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
                     found_signal = True
@@ -396,12 +477,13 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
                     await context.bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=ALLOWED_GROUP_CHAT_ID,
                         text=message,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Sinyal gönderildi: {message}")
+                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
                     last_signals[symbol] = current_signal
                     last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
                     found_signal = True
@@ -410,19 +492,19 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                 logger.error(f"{symbol} tarama hatası: {str(e)}")
         
         if not found_signal:
-            await context.bot.send_message(chat_id=chat_id, text="Sinyal bulunamadı ede. Az sabret.")
+            await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Sinyal bulunamadı ede. Az sabret.")
     except Exception as e:
         logger.error(f"Genel tarama hatası: {str(e)}")
-        await context.bot.send_message(chat_id=chat_id, text="Bir hata oluştu, tekrar dene!")
+        await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Bir hata oluştu, tekrar dene!")
 
 async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
-    chat_id = context.bot_data.get('chat_id')
     models = context.bot_data.get('models', {})
     scalers = context.bot_data.get('scalers', {})
     while True:
         try:
             logger.info("Sürekli sinyal tarama başlıyor...")
             markets = exchange.load_markets()
+            logger.info("Markets başarıyla yüklendi (continuous_scan).")
             
             # Haberleri çek ve analiz et
             news_data = fetch_crypto_news()
@@ -435,6 +517,7 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                 logger.info(f"En fazla yükselen coin: {top_gainer}")
             
             symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
+            logger.info(f"Taranacak sembol sayısı (continuous_scan): {len(symbols)}")
             
             # Önce en fazla yükselen coini tara
             found_signal = False
@@ -460,12 +543,13 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                     if direction and entry:
                         current_signal = (direction, entry, sl, tp)
                         message = await format_telegram_message(top_gainer, direction, entry, sl, tp)
+                        # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
                         await context.bot.send_message(
-                            chat_id=chat_id,
+                            chat_id=ALLOWED_GROUP_CHAT_ID,
                             text=message,
                             parse_mode='HTML'
                         )
-                        logger.info(f"Sinyal gönderildi: {message}")
+                        logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
                         last_signals[top_gainer] = current_signal
                         last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
                         found_signal = True
@@ -494,33 +578,48 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
                     await context.bot.send_message(
-                        chat_id=chat_id,
+                        chat_id=ALLOWED_GROUP_CHAT_ID,
                         text=message,
                         parse_mode='HTML'
                     )
-                    logger.info(f"Sinyal gönderildi: {message}")
+                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
                     last_signals[symbol] = current_signal
                     last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
                     found_signal = True
                     time.sleep(1)
             if not found_signal:
                 logger.info("Sinyal bulunamadı, 300 saniye bekleniyor...")
+                await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Sinyal bulunamadı ede. Az sabret.")
             context.bot_data['models'] = models
             context.bot_data['scalers'] = scalers
             await asyncio.sleep(300)
         except Exception as e:
             logger.error(f"Sürekli tarama hatası: {str(e)}")
+            await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Bir hata oluştu, tekrar dene!")
             await asyncio.sleep(300)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    context.bot_data['chat_id'] = chat_id
-    context.bot_data['models'] = {}
-    context.bot_data['scalers'] = {}
+    chat_type = update.effective_chat.type
+    logger.info(f"Start komutu alındı, chat_id: {chat_id}, chat_type: {chat_type}")
+    
+    # Eğer komut ALLOWED_GROUP_CHAT_ID'den gelmiyorsa, yalnızca bir uyarı mesajı gönder
+    if chat_id != ALLOWED_GROUP_CHAT_ID:
+        await update.message.reply_text("Bu bot yalnızca belirli bir gruba sinyal gönderir. Lütfen gruba katılın.")
+        return
+    
+    # Gruba hoş geldin mesajı gönder
     await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
-    await scan_symbols(context, chat_id, context.bot_data['models'], context.bot_data['scalers'])
-    context.job_queue.run_repeating(continuous_scan, interval=300, first=5)
+    
+    # İlk taramayı başlat
+    await scan_symbols(context, context.bot_data.get('models', {}), context.bot_data.get('scalers', {}))
+    
+    # Sürekli taramayı başlat (yalnızca bir kez başlatılması için kontrol et)
+    if not context.job_queue.get_jobs_by_name("continuous_scan"):
+        context.job_queue.run_repeating(continuous_scan, interval=300, first=5, name="continuous_scan")
+        logger.info("Sürekli tarama başlatıldı.")
 
 def main():
     flask_thread = threading.Thread(target=run_flask)
@@ -546,4 +645,4 @@ def main():
         logger.error(f"Bot başlatma hatası: {str(e)}")
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    main()
