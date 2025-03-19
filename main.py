@@ -19,6 +19,9 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from sklearn.preprocessing import MinMaxScaler
 import pickle
 
+# Eager execution'ı etkinleştir
+tf.config.run_functions_eagerly(True)
+
 # Özel TLS yapılandırması
 context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
 context.set_ciphers("DEFAULT")
@@ -115,8 +118,8 @@ async def generate_signal(symbol, model, scaler):
         scaled_data = scaler.transform(data)
         
         X_test = scaled_data[-LOOKBACK:].reshape(1, LOOKBACK, 1)
-        predict_fn = tf.function(model.predict, reduce_retracing=True)
-        predicted_price = predict_fn(X_test, verbose=0)
+        # predict_fn yerine doğrudan model.predict kullanıyoruz
+        predicted_price = model.predict(X_test, verbose=0)
         predicted_price = scaler.inverse_transform(predicted_price)[0][0]
         
         last = df.iloc[-1]
