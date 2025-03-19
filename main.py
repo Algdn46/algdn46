@@ -20,15 +20,40 @@ from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from sklearn.preprocessing import MinMaxScaler
 import pickle
 import random
+from flask import Flask
+import threading
 
 # TensorFlow uyarılarını bastırmak için
-import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-tf.get_logger().setLevel('ERROR')  # TensorFlow log seviyesini ERROR olarak ayarla
+tf.get_logger().setLevel('ERROR')
 tf.data.experimental.enable_debug_mode()
 
 # Eager execution'ı etkinleştir
 tf.config.run_functions_eagerly(True)
+
+# Flask uygulamasını oluştur
+app = Flask(__name__)
+
+# Basit bir endpoint ekle
+@app.route('/')
+def keep_alive():
+    return "Bot is alive!", 200
+
+# Flask sunucusunu ayrı bir thread'de çalıştır
+def run_flask():
+    port = int(os.getenv("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
+
+# Kendi kendine ping atma fonksiyonu
+def self_ping():
+    while True:
+        try:
+            service_url = os.getenv("SERVICE_URL", "https://algdn46-bot.onrender.com")
+            requests.get(service_url)
+            logging.info("Self-ping gönderildi, bot uyanık tutuluyor...")
+        except Exception as e:
+            logging.error(f"Self-ping hatası: {str(e)}")
+        time.sleep(600)
 
 # Özel TLS yapılandırması
 context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
@@ -38,13 +63,13 @@ adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
 session.mount("https://", adapter)
 session.verify = True
 
-# Binance exchange nesnesini oluştur
+# Binance exchange nesnesini oluştur (spot piyasası için)
 exchange = binance({
     "session": session,
     "enableRateLimit": True,
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
-    'options': {'defaultType': 'future'},
+    'options': {'defaultType': 'spot'},  # Spot piyasasına geçtik
 })
 
 # Config ve Log Ayarları
@@ -56,6 +81,7 @@ INTERVAL = '5m'
 RISK_RATIO = 1.0
 LOOKBACK = 60
 last_signals = {}
+last_signal_times = {}  # Sinyal zamanlarını takip etmek için
 TR_TIMEZONE = timezone(timedelta(hours=3))
 scaler = MinMaxScaler(feature_range=(0, 1))
 MODEL_DIR = "models"
@@ -68,7 +94,7 @@ def fetch_crypto_news():
         headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers)
         soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', class_='post-card', limit=5)  # Son 5 haberi al
+        articles = soup.find_all('article', class_='post-card', limit=5)
         
         news_data = []
         for article in articles:
@@ -86,20 +112,19 @@ def analyze_news_sentiment(news_data):
         news_lower = news.lower()
         if "elon musk" in news_lower and "bitcoin" in news_lower:
             if any(word in news_lower for word in ["positive", "support", "bullish", "soar", "rise"]):
-                sentiment_score += 0.2  # Olumlu haber, %20 artış etkisi
+                sentiment_score += 0.2
             elif any(word in news_lower for word in ["negative", "criticize", "bearish", "drop", "fall"]):
-                sentiment_score -= 0.2  # Olumsuz haber, %20 düşüş etkisi
+                sentiment_score -= 0.2
     return sentiment_score
 
-# Futures piyasasında en fazla yükselen coini bul
+# Spot piyasasında en fazla yükselen coini bul
 def get_top_gainer():
     try:
         tickers = exchange.fetch_tickers()
-        futures_tickers = {symbol: ticker for symbol, ticker in tickers.items() if 'USDT' in symbol and ticker.get('info', {}).get('contractType') == 'PERPETUAL'}
+        spot_tickers = {symbol: ticker for symbol, ticker in tickers.items() if 'USDT' in symbol and '/' in symbol}
         
-        # 24 saatlik değişim oranına göre sırala
         sorted_tickers = sorted(
-            futures_tickers.items(),
+            spot_tickers.items(),
             key=lambda x: x[1].get('percentage', 0),
             reverse=True
         )
@@ -156,7 +181,6 @@ def train_lstm_model(symbol, retrain=False):
         model = create_lstm_model()
         model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=1)
         
-        # Modeli ve scaler'ı kaydet
         model.save(model_path)
         with open(scaler_path, 'wb') as f:
             pickle.dump(scaler, f)
@@ -177,6 +201,12 @@ def round_price(price, symbol):
 
 async def generate_signal(symbol, model, scaler, news_sentiment):
     try:
+        # Anlık fiyatı fetch_ticker ile çek
+        ticker = exchange.fetch_ticker(symbol)
+        current_price = ticker['last']
+        logger.info(f"{symbol} | Anlık fiyat (fetch_ticker): {current_price}")
+
+        # OHLCV verilerini al (trend ve ATR için)
         ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=LOOKBACK+5)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
@@ -185,19 +215,21 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         last_5_closes = df['close'].tail(5).values
         trend_direction = 'UP' if all(last_5_closes[i] < last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else \
                          'DOWN' if all(last_5_closes[i] > last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else 'NEUTRAL'
+        logger.info(f"{symbol} | Trend yönü: {trend_direction}")
         
-        # Hacim analizi (artık zorunlu değil, sadece bilgi için hesaplanıyor)
+        # Hacim analizi
         avg_volume = df['volume'].rolling(window=14).mean().iloc[-1]
         current_volume = df['volume'].iloc[-1]
         volume_confirmed = current_volume > avg_volume * 1.5
+        logger.info(f"{symbol} | Hacim onayı: {volume_confirmed}, Ortalama hacim: {avg_volume}, Mevcut hacim: {current_volume}")
         
-        # Volatilite analizi (artık zorunlu değil, sadece bilgi için hesaplanıyor)
+        # Volatilite analizi (ATR)
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         atr = ranges.rolling(window=14).mean().iloc[-1]
-        volatility_confirmed = atr > df['close'].iloc[-1] * 0.005
+        logger.info(f"{symbol} | ATR: {atr}")
         
         # LSTM tahmini
         data = df['close'].values.reshape(-1, 1)
@@ -205,9 +237,7 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         X_test = scaled_data[-LOOKBACK:].reshape(1, LOOKBACK, 1)
         predicted_price = model.predict(X_test, verbose=0)
         predicted_price = scaler.inverse_transform(predicted_price)[0][0]
-        
-        last = df.iloc[-1]
-        current_price = last['close']
+        logger.info(f"{symbol} | Tahmin edilen fiyat: {predicted_price}")
         
         # Önceki sinyali kontrol et
         if symbol in last_signals:
@@ -217,48 +247,68 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             
             if predicted_price > current_price * 1.002 and last_direction == 'LONG':
                 if current_price < last_tp3:
+                    logger.info(f"{symbol} | Önceki LONG sinyali nedeniyle sinyal üretilmedi.")
                     return None, None, None, None
             elif predicted_price < current_price * 0.998 and last_direction == 'SHORT':
                 if current_price > last_tp3:
+                    logger.info(f"{symbol} | Önceki SHORT sinyali nedeniyle sinyal üretilmedi.")
                     return None, None, None, None
         
         # Haber etkisini dahil et
-        price_threshold = 0.001  # Varsayılan eşik %0.1 (daha önce %0.2 idi)
+        price_threshold = 0.001
         if news_sentiment > 0:
-            price_threshold -= news_sentiment  # Olumlu haber, eşiği düşür
+            price_threshold -= news_sentiment
         elif news_sentiment < 0:
-            price_threshold += news_sentiment  # Olumsuz haber, eşiği artır
+            price_threshold += news_sentiment
+        logger.info(f"{symbol} | Fiyat eşiği (haber etkisi dahil): {price_threshold}")
         
-        # Sinyal üretimi (hacim ve volatilite onayı kaldırıldı)
+        # Sinyal üretimi
         if (predicted_price > current_price * (1 + price_threshold) and
             trend_direction in ['UP', 'NEUTRAL']):
-            sl = last['low'] - (atr * RISK_RATIO * 2.0)
-            tp1 = last['close'] + (atr * RISK_RATIO * 2.0)
-            tp2 = last['close'] + (atr * RISK_RATIO * 3.0)
-            tp3 = last['close'] + (atr * RISK_RATIO * 4.0)
+            sl = current_price - (atr * RISK_RATIO * 2.0)
+            tp1 = current_price + (atr * RISK_RATIO * 2.0)
+            tp2 = current_price + (atr * RISK_RATIO * 3.0)
+            tp3 = current_price + (atr * RISK_RATIO * 4.0)
             
-            entry = round_price(last['close'], symbol)
+            # Minimum farkı garanti altına al
+            min_diff = current_price * 0.001  # %0.1 minimum fark
+            sl = min(sl, current_price - min_diff)
+            tp1 = max(tp1, current_price + min_diff)
+            tp2 = max(tp2, tp1 + min_diff)
+            tp3 = max(tp3, tp2 + min_diff)
+            
+            entry = round_price(current_price, symbol)
             sl = round_price(sl, symbol)
             tp1 = round_price(tp1, symbol)
             tp2 = round_price(tp2, symbol)
             tp3 = round_price(tp3, symbol)
             
+            logger.info(f"{symbol} | LONG sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'LONG', entry, sl, (tp1, tp2, tp3)
         elif (predicted_price < current_price * (1 - price_threshold) and
               trend_direction in ['DOWN', 'NEUTRAL']):
-            sl = last['high'] + (atr * RISK_RATIO * 2.0)
-            tp1 = last['close'] - (atr * RISK_RATIO * 2.0)
-            tp2 = last['close'] - (atr * RISK_RATIO * 3.0)
-            tp3 = last['close'] - (atr * RISK_RATIO * 4.0)
+            sl = current_price + (atr * RISK_RATIO * 2.0)
+            tp1 = current_price - (atr * RISK_RATIO * 2.0)
+            tp2 = current_price - (atr * RISK_RATIO * 3.0)
+            tp3 = current_price - (atr * RISK_RATIO * 4.0)
             
-            entry = round_price(last['close'], symbol)
+            # Minimum farkı garanti altına al
+            min_diff = current_price * 0.001
+            sl = max(sl, current_price + min_diff)
+            tp1 = min(tp1, current_price - min_diff)
+            tp2 = min(tp2, tp1 - min_diff)
+            tp3 = min(tp3, tp2 - min_diff)
+            
+            entry = round_price(current_price, symbol)
             sl = round_price(sl, symbol)
             tp1 = round_price(tp1, symbol)
             tp2 = round_price(tp2, symbol)
             tp3 = round_price(tp3, symbol)
             
+            logger.info(f"{symbol} | SHORT sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'SHORT', entry, sl, (tp1, tp2, tp3)
         
+        logger.info(f"{symbol} | Sinyal üretilemedi.")
         return None, None, None, None
     except Exception as e:
         logger.error(f"{symbol} | Hata: {str(e)}")
@@ -266,7 +316,7 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
 
 async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
-        clean_symbol = symbol.replace(':USDT-', '/USDT').split('/')[0] + '/USDT'
+        clean_symbol = symbol.split('/')[0] + '/USDT'
         direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'
         tp1, tp2, tp3 = tp
         message = f"""
@@ -309,7 +359,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
         if top_gainer:
             logger.info(f"En fazla yükselen coin: {top_gainer}")
         
-        symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
+        symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
         
         # Önce en fazla yükselen coini tara
         found_signal = False
@@ -335,15 +385,23 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                     )
                     logger.info(f"Sinyal gönderildi: {message}")
                     last_signals[top_gainer] = current_signal
+                    last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
                     found_signal = True
                     time.sleep(1)
             except Exception as e:
                 logger.error(f"{top_gainer} tarama hatası: {str(e)}")
-            symbols.remove(top_gainer)  # Top gainer'ı listeden çıkar
+            symbols.remove(top_gainer)
         
         # Diğer sembolleri tara
         for symbol in symbols:
             try:
+                # Aynı sembol için son 5 dakika içinde sinyal üretilmişse atla
+                if symbol in last_signal_times:
+                    last_time = last_signal_times[symbol]
+                    if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
+                        logger.info(f"{symbol} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
+                        continue
+                
                 if symbol not in models:
                     model, scaler = train_lstm_model(symbol)
                     if model is None or scaler is None:
@@ -363,6 +421,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                     )
                     logger.info(f"Sinyal gönderildi: {message}")
                     last_signals[symbol] = current_signal
+                    last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
                     found_signal = True
                     time.sleep(1)
             except Exception as e:
@@ -393,13 +452,21 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             if top_gainer:
                 logger.info(f"En fazla yükselen coin: {top_gainer}")
             
-            symbols = [s for s in markets if markets[s]['type'] == 'future' and markets[s]['active']]
+            symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
             
             # Önce en fazla yükselen coini tara
             found_signal = False
             if top_gainer in symbols:
                 try:
-                    if top_gainer not in models or random.random() < 0.1:  # %10 ihtimalle modeli güncelle
+                    # Son 5 dakika içinde sinyal üretilmişse atla
+                    if top_gainer in last_signal_times:
+                        last_time = last_signal_times[top_gainer]
+                        if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
+                            logger.info(f"{top_gainer} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
+                            symbols.remove(top_gainer)
+                            continue
+                    
+                    if top_gainer not in models or random.random() < 0.1:
                         model, scaler = train_lstm_model(top_gainer, retrain=True)
                         if model is None or scaler is None:
                             symbols.remove(top_gainer)
@@ -419,6 +486,7 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                         )
                         logger.info(f"Sinyal gönderildi: {message}")
                         last_signals[top_gainer] = current_signal
+                        last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
                         found_signal = True
                         time.sleep(1)
                 except Exception as e:
@@ -427,7 +495,14 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             
             # Diğer sembolleri tara
             for symbol in symbols:
-                if symbol not in models or random.random() < 0.1:  # %10 ihtimalle modeli güncelle
+                # Son 5 dakika içinde sinyal üretilmişse atla
+                if symbol in last_signal_times:
+                    last_time = last_signal_times[symbol]
+                    if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
+                        logger.info(f"{symbol} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
+                        continue
+                
+                if symbol not in models or random.random() < 0.1:
                     model, scaler = train_lstm_model(symbol, retrain=True)
                     if model is None or scaler is None:
                         continue
@@ -446,6 +521,7 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                     )
                     logger.info(f"Sinyal gönderildi: {message}")
                     last_signals[symbol] = current_signal
+                    last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
                     found_signal = True
                     time.sleep(1)
             if not found_signal:
@@ -467,6 +543,14 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.job_queue.run_repeating(continuous_scan, interval=300, first=5)
 
 def main():
+    flask_thread = threading.Thread(target=run_flask)
+    flask_thread.daemon = True
+    flask_thread.start()
+
+    ping_thread = threading.Thread(target=self_ping)
+    ping_thread.daemon = True
+    ping_thread.start()
+
     load_dotenv("config.env")
     token = os.getenv("TELEGRAM_TOKEN")
     if not token:
