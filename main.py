@@ -24,6 +24,7 @@ import random
 # TensorFlow uyarılarını bastırmak için
 import os
 os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+tf.get_logger().setLevel('ERROR')  # TensorFlow log seviyesini ERROR olarak ayarla
 tf.data.experimental.enable_debug_mode()
 
 # Eager execution'ı etkinleştir
