@@ -14,9 +14,10 @@ import ssl
 from urllib3.util.ssl_ import create_urllib3_context
 from ccxt import binance
 import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.models import Sequential, load_model
+from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from sklearn.preprocessing import MinMaxScaler
+import pickle
 
 # Özel TLS yapılandırması
 context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
@@ -41,41 +42,49 @@ logger = logging.getLogger(__name__)
 
 # Global Sabitler
 INTERVAL = '5m'
-RISK_RATIO = 0.2  # Risk oranı %0.2
-LOOKBACK = 60  # LSTM için geçmiş veri uzunluğu
-last_signals = {}  # Tekrarlanan sinyalleri önlemek için
-
-# Türkiye saati (UTC+3)
+RISK_RATIO = 0.2
+LOOKBACK = 60
+last_signals = {}
 TR_TIMEZONE = timezone(timedelta(hours=3))
-
-# Verileri ölçeklendirmek için scaler
 scaler = MinMaxScaler(feature_range=(0, 1))
+MODEL_DIR = "models"
+os.makedirs(MODEL_DIR, exist_ok=True)
 
 # LSTM Modelini oluştur
 def create_lstm_model():
-    model = Sequential()
-    model.add(LSTM(units=50, return_sequences=True, input_shape=(LOOKBACK, 1)))
-    model.add(Dropout(0.2))
-    model.add(LSTM(units=50, return_sequences=False))
-    model.add(Dropout(0.2))
-    model.add(Dense(units=25))
-    model.add(Dense(units=1))  # Fiyat tahmini için tek bir çıkış
+    model = Sequential([
+        Input(shape=(LOOKBACK, 1)),
+        LSTM(units=50, return_sequences=True),
+        Dropout(0.2),
+        LSTM(units=50, return_sequences=False),
+        Dropout(0.2),
+        Dense(units=25),
+        Dense(units=1)
+    ])
     model.compile(optimizer='adam', loss='mean_squared_error')
     return model
 
-# Veriyi hazırla ve modeli eğit
+# Modeli eğit ve kaydet
 def train_lstm_model(symbol):
+    model_path = os.path.join(MODEL_DIR, f"{symbol.replace('/', '_')}_lstm_model.keras")
+    scaler_path = os.path.join(MODEL_DIR, f"{symbol.replace('/', '_')}_scaler.pkl")
+    
+    if os.path.exists(model_path) and os.path.exists(scaler_path):
+        logger.info(f"{symbol} için model ve scaler yükleniyor...")
+        model = load_model(model_path)
+        with open(scaler_path, 'rb') as f:
+            scaler = pickle.load(f)
+        return model, scaler
+    
     try:
-        # Geçmiş 1 yıllık 5 dakikalık veriyi çek
-        ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=10000)  # Yaklaşık 1 yıl
+        ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=10000)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
         
-        # Sadece kapanış fiyatlarını kullan
         data = df['close'].values.reshape(-1, 1)
+        scaler = MinMaxScaler(feature_range=(0, 1))
         scaled_data = scaler.fit_transform(data)
         
-        # Eğitim verisi oluştur
         X_train, y_train = [], []
         for i in range(LOOKBACK, len(scaled_data)):
             X_train.append(scaled_data[i-LOOKBACK:i, 0])
@@ -83,47 +92,49 @@ def train_lstm_model(symbol):
         X_train, y_train = np.array(X_train), np.array(y_train)
         X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
         
-        # Modeli oluştur ve eğit
         model = create_lstm_model()
         model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=1)
-        return model
+        
+        # Modeli ve scaler'ı kaydet
+        model.save(model_path)
+        with open(scaler_path, 'wb') as f:
+            pickle.dump(scaler, f)
+        
+        return model, scaler
     except Exception as e:
         logger.error(f"LSTM modeli eğitme hatası: {str(e)}", exc_info=True)
-        return None
+        return None, None
 
-async def generate_signal(symbol, model):
+async def generate_signal(symbol, model, scaler):
     try:
         ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=LOOKBACK+1)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
         
-        # Kapanış fiyatlarını al ve ölçeklendir
         data = df['close'].values.reshape(-1, 1)
         scaled_data = scaler.transform(data)
         
-        # Son 60 veriyi al ve tahmini yap
         X_test = scaled_data[-LOOKBACK:].reshape(1, LOOKBACK, 1)
-        predicted_price = model.predict(X_test, verbose=0)
+        predict_fn = tf.function(model.predict, reduce_retracing=True)
+        predicted_price = predict_fn(X_test, verbose=0)
         predicted_price = scaler.inverse_transform(predicted_price)[0][0]
         
         last = df.iloc[-1]
         current_price = last['close']
         
-        # ATR ile SL ve TP hesapla
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
         ranges = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
         atr = ranges.rolling(window=14).mean().iloc[-1]
         
-        # Sinyal üret
-        if predicted_price > current_price * 1.005:  # %0.5 artış bekleniyorsa
+        if predicted_price > current_price * 1.002:  # %0.2 artış
             sl = last['low'] - (atr * RISK_RATIO)
             tp1 = last['close'] + (atr * RISK_RATIO * 1.0)
             tp2 = last['close'] + (atr * RISK_RATIO * 1.5)
             tp3 = last['close'] + (atr * RISK_RATIO * 2.0)
             return 'LONG', last['close'], sl, (tp1, tp2, tp3)
-        elif predicted_price < current_price * 0.995:  # %0.5 düşüş bekleniyorsa
+        elif predicted_price < current_price * 0.998:  # %0.2 düşüş
             sl = last['high'] + (atr * RISK_RATIO)
             tp1 = last['close'] - (atr * RISK_RATIO * 1.0)
             tp2 = last['close'] - (atr * RISK_RATIO * 1.5)
@@ -155,7 +166,7 @@ async def format_telegram_message(symbol, direction, entry, sl, tp):
         logger.error(f"Mesaj formatlama hatası: {str(e)}", exc_info=True)
         return "Mesaj formatlama hatası oluştu!"
 
-async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models: dict):
+async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models: dict, scalers: dict):
     try:
         logger.info("Sinyaller taranıyor...")
         for attempt in range(3):
@@ -176,11 +187,14 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
         for symbol in symbols:
             try:
                 if symbol not in models:
-                    models[symbol] = train_lstm_model(symbol)
+                    model, scaler = train_lstm_model(symbol)
+                    if model is None or scaler is None:
+                        continue
+                    models[symbol] = model
+                    scalers[symbol] = scaler
                 model = models[symbol]
-                if model is None:
-                    continue
-                direction, entry, sl, tp = await generate_signal(symbol, model)
+                scaler = scalers[symbol]
+                direction, entry, sl, tp = await generate_signal(symbol, model, scaler)
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     if symbol not in last_signals or last_signals[symbol] != current_signal:
@@ -190,6 +204,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
                             text=message,
                             parse_mode='HTML'
                         )
+                        logger.info(f"Sinyal gönderildi: {message}")
                         last_signals[symbol] = current_signal
                         found_signal = True
                         time.sleep(1)
@@ -205,6 +220,7 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
 async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
     chat_id = context.bot_data.get('chat_id')
     models = context.bot_data.get('models', {})
+    scalers = context.bot_data.get('scalers', {})
     while True:
         try:
             logger.info("Sürekli sinyal tarama başlıyor...")
@@ -213,11 +229,14 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             found_signal = False
             for symbol in symbols:
                 if symbol not in models:
-                    models[symbol] = train_lstm_model(symbol)
+                    model, scaler = train_lstm_model(symbol)
+                    if model is None or scaler is None:
+                        continue
+                    models[symbol] = model
+                    scalers[symbol] = scaler
                 model = models[symbol]
-                if model is None:
-                    continue
-                direction, entry, sl, tp = await generate_signal(symbol, model)
+                scaler = scalers[symbol]
+                direction, entry, sl, tp = await generate_signal(symbol, model, scaler)
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     if symbol not in last_signals or last_signals[symbol] != current_signal:
@@ -227,12 +246,14 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                             text=message,
                             parse_mode='HTML'
                         )
+                        logger.info(f"Sinyal gönderildi: {message}")
                         last_signals[symbol] = current_signal
                         found_signal = True
                         time.sleep(1)
             if not found_signal:
                 logger.info("Sinyal bulunamadı, 60 saniye bekleniyor...")
             context.bot_data['models'] = models
+            context.bot_data['scalers'] = scalers
             await asyncio.sleep(60)
         except Exception as e:
             logger.error(f"Sürekli tarama hatası: {str(e)}", exc_info=True)
@@ -242,8 +263,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     context.bot_data['chat_id'] = chat_id
     context.bot_data['models'] = {}
+    context.bot_data['scalers'] = {}
     await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
-    await scan_symbols(context, chat_id, context.bot_data['models'])
+    await scan_symbols(context, chat_id, context.bot_data['models'], context.bot_data['scalers'])
     context.job_queue.run_repeating(continuous_scan, interval=60, first=5)
 
 def main():
