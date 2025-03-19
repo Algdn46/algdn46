@@ -603,6 +603,6 @@ def main():
         application.run_polling()
     except Exception as e:
         logger.error(f"Bot başlatma hatası: {str(e)}")
-
-if __name__ == "__main__":
-    main()
+        if __name__ == "__main__":
+         port = int(os.getenv("PORT", 8000))  # Render PORT ortam değişkenini kullan, yoksa 8000
+         app.run(host="0.0.0.0", port=port)
