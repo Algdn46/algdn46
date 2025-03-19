@@ -152,7 +152,7 @@ async def generate_signal(symbol, model, scaler):
 async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
         clean_symbol = symbol.replace(':USDT-', '/USDT').split('/')[0] + '/USDT'
-        direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'
+        direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'  # Short için emojiyi 🔻 olarak güncelledik
         tp1, tp2, tp3 = tp
         message = f"""
 🚦✈️ {clean_symbol} {direction_text}
@@ -243,4 +243,48 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                 if direction and entry:
                     current_signal = (direction, entry, sl, tp)
                     if symbol not in last_signals or last_signals[symbol] != current_signal:
-                        message = await format
+                        message = await format_telegram_message(symbol, direction, entry, sl, tp)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=message,
+                            parse_mode='HTML'
+                        )
+                        logger.info(f"Sinyal gönderildi: {message}")
+                        last_signals[symbol] = current_signal
+                        found_signal = True
+                        time.sleep(1)
+            if not found_signal:
+                logger.info("Sinyal bulunamadı, 120 saniye bekleniyor...")
+            context.bot_data['models'] = models
+            context.bot_data['scalers'] = scalers
+            await asyncio.sleep(120)  # Tarama aralığını 120 saniyeye çıkardık
+        except Exception as e:
+            logger.error(f"Sürekli tarama hatası: {str(e)}", exc_info=True)
+            await asyncio.sleep(120)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    context.bot_data['chat_id'] = chat_id
+    context.bot_data['models'] = {}
+    context.bot_data['scalers'] = {}
+    await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
+    await scan_symbols(context, chat_id, context.bot_data['models'], context.bot_data['scalers'])
+    context.job_queue.run_repeating(continuous_scan, interval=120, first=5)  # Tarama aralığını 120 saniyeye çıkardık
+
+def main():
+    load_dotenv("config.env")
+    token = os.getenv("TELEGRAM_TOKEN")
+    if not token:
+        logger.error("TELEGRAM_TOKEN bulunamadı!")
+        exit(1)
+
+    try:
+        application = Application.builder().token(token).build()
+        application.add_handler(CommandHandler("start", start))
+        logger.info("Bot başlatılıyor...")
+        application.run_polling()
+    except Exception as e:
+        logger.error(f"Bot başlatma hatası: {str(e)}", exc_info=True)
+
+if __name__ == "__main__":
+    asyncio.run(main())
