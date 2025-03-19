@@ -19,6 +19,7 @@ from tensorflow.keras.models import Sequential, load_model
 from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
 from sklearn.preprocessing import MinMaxScaler
 import pickle
+import random
 
 # Eager execution'ı etkinleştir
 tf.config.run_functions_eagerly(True)
