@@ -21,6 +21,11 @@ from sklearn.preprocessing import MinMaxScaler
 import pickle
 import random
 
+# TensorFlow uyarılarını bastırmak için
+import os
+os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
+tf.data.experimental.enable_debug_mode()
+
 # Eager execution'ı etkinleştir
 tf.config.run_functions_eagerly(True)
 
@@ -218,6 +223,9 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         
         # Haber etkisini dahil et
         price_threshold = 0.002  # Varsayılan eşik %0.2
+        # Sinyal üretimini kolaylaştırmak için (opsiyonel):
+        # price_threshold = 0.001  # Varsayılan eşik %0.1
+        
         if news_sentiment > 0:
             price_threshold -= news_sentiment  # Olumlu haber, eşiği düşür
         elif news_sentiment < 0:
@@ -227,6 +235,10 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         if (predicted_price > current_price * (1 + price_threshold) and
             trend_direction in ['UP', 'NEUTRAL'] and
             volume_confirmed and volatility_confirmed):
+            # Sinyal üretimini kolaylaştırmak için (opsiyonel):
+            # if (predicted_price > current_price * (1 + price_threshold) and
+            #     trend_direction in ['UP', 'NEUTRAL']):
+            
             sl = last['low'] - (atr * RISK_RATIO * 2.0)
             tp1 = last['close'] + (atr * RISK_RATIO * 2.0)
             tp2 = last['close'] + (atr * RISK_RATIO * 3.0)
@@ -242,6 +254,10 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         elif (predicted_price < current_price * (1 - price_threshold) and
               trend_direction in ['DOWN', 'NEUTRAL'] and
               volume_confirmed and volatility_confirmed):
+            # Sinyal üretimini kolaylaştırmak için (opsiyonel):
+            # elif (predicted_price < current_price * (1 - price_threshold) and
+            #       trend_direction in ['DOWN', 'NEUTRAL']):
+            
             sl = last['high'] + (atr * RISK_RATIO * 2.0)
             tp1 = last['close'] - (atr * RISK_RATIO * 2.0)
             tp2 = last['close'] - (atr * RISK_RATIO * 3.0)
@@ -445,13 +461,13 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                     found_signal = True
                     time.sleep(1)
             if not found_signal:
-                logger.info("Sinyal bulunamadı, 120 saniye bekleniyor...")
+                logger.info("Sinyal bulunamadı, 300 saniye bekleniyor...")
             context.bot_data['models'] = models
             context.bot_data['scalers'] = scalers
-            await asyncio.sleep(120)
+            await asyncio.sleep(300)  # Tarama aralığını 300 saniyeye çıkardık
         except Exception as e:
             logger.error(f"Sürekli tarama hatası: {str(e)}")
-            await asyncio.sleep(120)
+            await asyncio.sleep(300)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
@@ -460,7 +476,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['scalers'] = {}
     await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
     await scan_symbols(context, chat_id, context.bot_data['models'], context.bot_data['scalers'])
-    context.job_queue.run_repeating(continuous_scan, interval=120, first=5)
+    context.job_queue.run_repeating(continuous_scan, interval=300, first=5)  # Tarama aralığını 300 saniyeye çıkardık
 
 def main():
     load_dotenv("config.env")
