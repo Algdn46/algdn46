@@ -92,8 +92,8 @@ TP1_PERCENT = 0.015  # %1.5 yukarıda
 TP2_PERCENT = 0.025  # %2.5 yukarıda
 TP3_PERCENT = 0.035  # %3.5 yukarıda
 
-# Yalnızca bu gruba sinyal gönderilecek (grubunun chat_id değerini buraya yaz)
-ALLOWED_GROUP_CHAT_ID = -123456789  # BURAYI GRUBUN chat_id DEĞERİYLE GÜNCELLE
+# Yalnızca bu gruba sinyal gönderilecek
+ALLOWED_GROUP_CHAT_ID = -4652984499  # Senin grubunun chat_id değeri
 
 # Haber takibi için fonksiyon
 def fetch_crypto_news():
