@@ -69,7 +69,7 @@ exchange = binance({
     "enableRateLimit": True,
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET_KEY'),
-    'options': {'defaultType': 'spot'},  # Spot piyasasına geçtik
+    'options': {'defaultType': 'spot'},
 })
 
 # Config ve Log Ayarları
@@ -78,14 +78,19 @@ logger = logging.getLogger(__name__)
 
 # Global Sabitler
 INTERVAL = '5m'
-RISK_RATIO = 1.0
 LOOKBACK = 60
 last_signals = {}
-last_signal_times = {}  # Sinyal zamanlarını takip etmek için
+last_signal_times = {}
 TR_TIMEZONE = timezone(timedelta(hours=3))
 scaler = MinMaxScaler(feature_range=(0, 1))
 MODEL_DIR = "models"
 os.makedirs(MODEL_DIR, exist_ok=True)
+
+# Yüzde tabanlı SL ve TP oranları
+SL_PERCENT = 0.025  # %2.5 aşağıda
+TP1_PERCENT = 0.015  # %1.5 yukarıda
+TP2_PERCENT = 0.025  # %2.5 yukarıda
+TP3_PERCENT = 0.035  # %3.5 yukarıda
 
 # Haber takibi için fonksiyon
 def fetch_crypto_news():
@@ -206,7 +211,7 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         current_price = ticker['last']
         logger.info(f"{symbol} | Anlık fiyat (fetch_ticker): {current_price}")
 
-        # OHLCV verilerini al (trend ve ATR için)
+        # OHLCV verilerini al (trend için)
         ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=LOOKBACK+5)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
@@ -222,14 +227,6 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         current_volume = df['volume'].iloc[-1]
         volume_confirmed = current_volume > avg_volume * 1.5
         logger.info(f"{symbol} | Hacim onayı: {volume_confirmed}, Ortalama hacim: {avg_volume}, Mevcut hacim: {current_volume}")
-        
-        # Volatilite analizi (ATR)
-        high_low = df['high'] - df['low']
-        high_close = np.abs(df['high'] - df['close'].shift())
-        low_close = np.abs(df['low'] - df['close'].shift())
-        ranges = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
-        atr = ranges.rolling(window=14).mean().iloc[-1]
-        logger.info(f"{symbol} | ATR: {atr}")
         
         # LSTM tahmini
         data = df['close'].values.reshape(-1, 1)
@@ -262,20 +259,13 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             price_threshold += news_sentiment
         logger.info(f"{symbol} | Fiyat eşiği (haber etkisi dahil): {price_threshold}")
         
-        # Sinyal üretimi
+        # Sinyal üretimi (yüzde tabanlı SL ve TP)
         if (predicted_price > current_price * (1 + price_threshold) and
             trend_direction in ['UP', 'NEUTRAL']):
-            sl = current_price - (atr * RISK_RATIO * 2.0)
-            tp1 = current_price + (atr * RISK_RATIO * 2.0)
-            tp2 = current_price + (atr * RISK_RATIO * 3.0)
-            tp3 = current_price + (atr * RISK_RATIO * 4.0)
-            
-            # Minimum farkı garanti altına al
-            min_diff = current_price * 0.001  # %0.1 minimum fark
-            sl = min(sl, current_price - min_diff)
-            tp1 = max(tp1, current_price + min_diff)
-            tp2 = max(tp2, tp1 + min_diff)
-            tp3 = max(tp3, tp2 + min_diff)
+            sl = current_price * (1 - SL_PERCENT)
+            tp1 = current_price * (1 + TP1_PERCENT)
+            tp2 = current_price * (1 + TP2_PERCENT)
+            tp3 = current_price * (1 + TP3_PERCENT)
             
             entry = round_price(current_price, symbol)
             sl = round_price(sl, symbol)
@@ -287,17 +277,10 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             return 'LONG', entry, sl, (tp1, tp2, tp3)
         elif (predicted_price < current_price * (1 - price_threshold) and
               trend_direction in ['DOWN', 'NEUTRAL']):
-            sl = current_price + (atr * RISK_RATIO * 2.0)
-            tp1 = current_price - (atr * RISK_RATIO * 2.0)
-            tp2 = current_price - (atr * RISK_RATIO * 3.0)
-            tp3 = current_price - (atr * RISK_RATIO * 4.0)
-            
-            # Minimum farkı garanti altına al
-            min_diff = current_price * 0.001
-            sl = max(sl, current_price + min_diff)
-            tp1 = min(tp1, current_price - min_diff)
-            tp2 = min(tp2, tp1 - min_diff)
-            tp3 = min(tp3, tp2 - min_diff)
+            sl = current_price * (1 + SL_PERCENT)
+            tp1 = current_price * (1 - TP1_PERCENT)
+            tp2 = current_price * (1 - TP2_PERCENT)
+            tp3 = current_price * (1 - TP3_PERCENT)
             
             entry = round_price(current_price, symbol)
             sl = round_price(sl, symbol)
@@ -395,7 +378,6 @@ async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, chat_id: int, models:
         # Diğer sembolleri tara
         for symbol in symbols:
             try:
-                # Aynı sembol için son 5 dakika içinde sinyal üretilmişse atla
                 if symbol in last_signal_times:
                     last_time = last_signal_times[symbol]
                     if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
@@ -458,7 +440,6 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             found_signal = False
             if top_gainer in symbols:
                 try:
-                    # Son 5 dakika içinde sinyal üretilmişse atla
                     if top_gainer in last_signal_times:
                         last_time = last_signal_times[top_gainer]
                         if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
@@ -495,7 +476,6 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
             
             # Diğer sembolleri tara
             for symbol in symbols:
-                # Son 5 dakika içinde sinyal üretilmişse atla
                 if symbol in last_signal_times:
                     last_time = last_signal_times[symbol]
                     if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
