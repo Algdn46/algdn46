@@ -152,7 +152,7 @@ async def generate_signal(symbol, model, scaler):
 async def format_telegram_message(symbol, direction, entry, sl, tp):
     try:
         clean_symbol = symbol.replace(':USDT-', '/USDT').split('/')[0] + '/USDT'
-        direction_text = '🚀 Long' if direction == 'LONG' else '🔽 Short'
+        direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'
         tp1, tp2, tp3 = tp
         message = f"""
 🚦✈️ {clean_symbol} {direction_text}
