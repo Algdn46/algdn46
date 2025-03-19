@@ -186,12 +186,12 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
         trend_direction = 'UP' if all(last_5_closes[i] < last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else \
                          'DOWN' if all(last_5_closes[i] > last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else 'NEUTRAL'
         
-        # Hacim analizi
+        # Hacim analizi (artık zorunlu değil, sadece bilgi için hesaplanıyor)
         avg_volume = df['volume'].rolling(window=14).mean().iloc[-1]
         current_volume = df['volume'].iloc[-1]
         volume_confirmed = current_volume > avg_volume * 1.5
         
-        # Volatilite analizi
+        # Volatilite analizi (artık zorunlu değil, sadece bilgi için hesaplanıyor)
         high_low = df['high'] - df['low']
         high_close = np.abs(df['high'] - df['close'].shift())
         low_close = np.abs(df['low'] - df['close'].shift())
@@ -223,23 +223,15 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
                     return None, None, None, None
         
         # Haber etkisini dahil et
-        price_threshold = 0.002  # Varsayılan eşik %0.2
-        # Sinyal üretimini kolaylaştırmak için (opsiyonel):
-        # price_threshold = 0.001  # Varsayılan eşik %0.1
-        
+        price_threshold = 0.001  # Varsayılan eşik %0.1 (daha önce %0.2 idi)
         if news_sentiment > 0:
             price_threshold -= news_sentiment  # Olumlu haber, eşiği düşür
         elif news_sentiment < 0:
             price_threshold += news_sentiment  # Olumsuz haber, eşiği artır
         
-        # Sinyal üretimi
+        # Sinyal üretimi (hacim ve volatilite onayı kaldırıldı)
         if (predicted_price > current_price * (1 + price_threshold) and
-            trend_direction in ['UP', 'NEUTRAL'] and
-            volume_confirmed and volatility_confirmed):
-            # Sinyal üretimini kolaylaştırmak için (opsiyonel):
-            # if (predicted_price > current_price * (1 + price_threshold) and
-            #     trend_direction in ['UP', 'NEUTRAL']):
-            
+            trend_direction in ['UP', 'NEUTRAL']):
             sl = last['low'] - (atr * RISK_RATIO * 2.0)
             tp1 = last['close'] + (atr * RISK_RATIO * 2.0)
             tp2 = last['close'] + (atr * RISK_RATIO * 3.0)
@@ -253,12 +245,7 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             
             return 'LONG', entry, sl, (tp1, tp2, tp3)
         elif (predicted_price < current_price * (1 - price_threshold) and
-              trend_direction in ['DOWN', 'NEUTRAL'] and
-              volume_confirmed and volatility_confirmed):
-            # Sinyal üretimini kolaylaştırmak için (opsiyonel):
-            # elif (predicted_price < current_price * (1 - price_threshold) and
-            #       trend_direction in ['DOWN', 'NEUTRAL']):
-            
+              trend_direction in ['DOWN', 'NEUTRAL']):
             sl = last['high'] + (atr * RISK_RATIO * 2.0)
             tp1 = last['close'] - (atr * RISK_RATIO * 2.0)
             tp2 = last['close'] - (atr * RISK_RATIO * 3.0)
@@ -465,7 +452,7 @@ async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
                 logger.info("Sinyal bulunamadı, 300 saniye bekleniyor...")
             context.bot_data['models'] = models
             context.bot_data['scalers'] = scalers
-            await asyncio.sleep(300)  # Tarama aralığını 300 saniyeye çıkardık
+            await asyncio.sleep(300)
         except Exception as e:
             logger.error(f"Sürekli tarama hatası: {str(e)}")
             await asyncio.sleep(300)
@@ -477,7 +464,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.bot_data['scalers'] = {}
     await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
     await scan_symbols(context, chat_id, context.bot_data['models'], context.bot_data['scalers'])
-    context.job_queue.run_repeating(continuous_scan, interval=300, first=5)  # Tarama aralığını 300 saniyeye çıkardık
+    context.job_queue.run_repeating(continuous_scan, interval=300, first=5)
 
 def main():
     load_dotenv("config.env")
