@@ -198,79 +198,41 @@ def train_lstm_model(symbol, retrain=False):
         logger.error(f"LSTM modeli eğitme hatası: {str(e)}")
         return None, None
 
-# Fiyatı formatlama fonksiyonu
+# Fiyatı formatlama fonksiyonu (Güncellendi)
 def format_price(price, symbol):
-    # Fiyat 1 USDT'den büyükse
-    if price >= 1:
-        # Fiyatı 1000'e böl
-        price_divided = price / 1000
-        # Sembole göre yuvarlama
-        if 'BTC' in symbol:
-            price_divided = round(price_divided, 3)
-        elif 'ETH' in symbol:
-            price_divided = round(price_divided, 2)
-        else:
-            price_divided = round(price_divided, 3)
-        # Binlik ayracı olarak nokta ekle
-        price_str = f"{price_divided:,.3f}".replace(",", ".")
-        # Gereksiz sıfırları kaldır
-        if '.' in price_str:
-            price_str = price_str.rstrip('0').rstrip('.')
-        return price_str
-    # Fiyat 1 USDT'den küçükse
+    # Sembole göre basamak sayısını belirle
+    if 'BTC' in symbol:
+        decimals = 2  # BTC için 2 basamak
+    elif 'ETH' in symbol:
+        decimals = 2  # ETH için 2 basamak
+    elif price < 0.01:
+        decimals = 6  # Küçük fiyatlar için 6 basamak
+    elif price < 1:
+        decimals = 4  # 1 USDT'den küçük fiyatlar için 4 basamak
     else:
-        # 4 anlamlı basamak (significant digits) olacak şekilde formatla
-        price_str = f"{price:.10f}"
-        # İlk sıfır olmayan rakamı bul
-        significant_digits = 0
-        result = ""
-        found_non_zero = False
-        for char in price_str:
-            if char == '.':
-                result += char
-                continue
-            if char != '0' and not found_non_zero:
-                found_non_zero = True
-            if found_non_zero:
-                significant_digits += 1
-            result += char
-            if significant_digits == 4:
-                break
-        # Gereksiz sıfırları kaldır
-        if '.' in result:
-            result = result.rstrip('0').rstrip('.')
-        return result
+        decimals = 3  # Diğer coin'ler için 3 basamak
 
-# Fiyatları yuvarlama fonksiyonu (hesaplama için)
+    # Fiyatı yuvarla ve formatla
+    price_str = f"{price:.{decimals}f}"
+    # Gereksiz sıfırları kaldır
+    if '.' in price_str:
+        price_str = price_str.rstrip('0').rstrip('.')
+    return price_str
+
+# Fiyatları yuvarlama fonksiyonu (Güncellendi)
 def round_price(price, symbol):
-    if price >= 1:
-        # Fiyatı 1000'e böl
-        price_divided = price / 1000
-        # Sembole göre yuvarlama
-        if 'BTC' in symbol:
-            return round(price_divided, 3)
-        elif 'ETH' in symbol:
-            return round(price_divided, 2)
-        else:
-            return round(price_divided, 3)
+    # Sembole göre basamak sayısını belirle
+    if 'BTC' in symbol:
+        decimals = 2
+    elif 'ETH' in symbol:
+        decimals = 2
+    elif price < 0.01:
+        decimals = 6
+    elif price < 1:
+        decimals = 4
     else:
-        # 4 anlamlı basamak için yuvarlama
-        price_str = f"{price:.10f}"
-        significant_digits = 0
-        result = ""
-        found_non_zero = False
-        for char in price_str:
-            if char == '.':
-                result += char
-                continue
-            if char != '0' and not found_non_zero:
-                found_non_zero = True
-            if found_non_zero:
-                significant_digits += 1
-            result += char
-            if significant_digits == 4:
-                break
-        return float(result.rstrip('0').rstrip('.'))
+        decimals = 3
+    return round(price, decimals)
 
 async def generate_signal(symbol, model, scaler, news_sentiment):
     try:
@@ -309,8 +271,6 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             last_signal = last_signals[symbol]
             last_direction, last_entry, last_sl, last_tp = last_signal
             last_tp3 = last_tp[2]
-            if current_price >= 1:
-                last_tp3 *= 1000  # 1000 ile çarp (çünkü 1000'e bölmüştük)
             
             if predicted_price > current_price * 1.002 and last_direction == 'LONG':
                 if current_price < last_tp3:
@@ -338,10 +298,10 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             tp3 = current_price * (1 + TP3_PERCENT)
             
             entry = current_price
-            sl = sl
-            tp1 = tp1
-            tp2 = tp2
-            tp3 = tp3
+            sl = round_price(sl, symbol)
+            tp1 = round_price(tp1, symbol)
+            tp2 = round_price(tp2, symbol)
+            tp3 = round_price(tp3, symbol)
             
             logger.info(f"{symbol} | LONG sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'LONG', entry, sl, (tp1, tp2, tp3)
@@ -353,10 +313,10 @@ async def generate_signal(symbol, model, scaler, news_sentiment):
             tp3 = current_price * (1 - TP3_PERCENT)
             
             entry = current_price
-            sl = sl
-            tp1 = tp1
-            tp2 = tp2
-            tp3 = tp3
+            sl = round_price(sl, symbol)
+            tp1 = round_price(tp1, symbol)
+            tp2 = round_price(tp2, symbol)
+            tp3 = round_price(tp3, symbol)
             
             logger.info(f"{symbol} | SHORT sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
             return 'SHORT', entry, sl, (tp1, tp2, tp3)
