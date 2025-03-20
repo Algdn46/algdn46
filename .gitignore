@@ -1,6 +1,19 @@
+
+# Hassas dosyalar
 *.env
-/data/
-*.log
-__pycache__/
-*.pyc
+config.env
+
+# Veri ve model dosyaları
+data/
 *.db
+*.keras
+*.pkl
+
+# Log dosyaları
+*.log
+
+# Python önbellek dosyaları
+*.pyc
+__pycache__/
+trading_data.db
+models/
