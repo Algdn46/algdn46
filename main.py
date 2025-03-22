@@ -1,608 +1,559 @@
-import ccxt
-import pandas as pd
-import numpy as np
-import time
 import os
+import pickle
 import logging
 import asyncio
-from datetime import datetime, timezone, timedelta
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
-from dotenv import load_dotenv
-import requests
-from bs4 import BeautifulSoup
-import ssl
-from urllib3.util.ssl_ import create_urllib3_context
-from ccxt import binance
+import numpy as np
+import pandas as pd
 import tensorflow as tf
 from tensorflow.keras.models import Sequential, load_model
-from tensorflow.keras.layers import LSTM, Dense, Dropout, Input
-from sklearn.preprocessing import MinMaxScaler
-import pickle
-import random
+from tensorflow.keras.layers import Dense, LSTM, Bidirectional, Dropout, Input
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping
+from tensorflow.keras.optimizers import Adam
+import ccxt.async_support as ccxt
+import pandas_ta as ta
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes, JobQueue
 from flask import Flask
-import threading
+import aiohttp
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+import subprocess
+import pytz
+from datetime import datetime
+from dotenv import load_dotenv
 
-# TensorFlow uyarılarını bastırmak için
-os.environ['TF_ENABLE_ONEDNN_OPTS'] = '0'
-tf.get_logger().setLevel('ERROR')
-tf.data.experimental.enable_debug_mode()
+# Ortam değişkenlerini yükle
+load_dotenv('config.env')
 
-# Eager execution'ı etkinleştir
-tf.config.run_functions_eagerly(True)
+# Ortam değişkenlerinden Telegram token ve chat ID'yi al
+TELEGRAM_TOKEN = os.getenv('TELEGRAM_TOKEN')
+CHAT_ID = os.getenv('CHAT_ID')
 
-# Flask uygulamasını oluştur
-app = Flask(__name__)
+# Hata kontrolü
+if TELEGRAM_TOKEN is None:
+    raise ValueError("Hata: TELEGRAM_TOKEN 'config.env' dosyasında tanımlı değil!")
+if CHAT_ID is None:
+    raise ValueError("Hata: CHAT_ID 'config.env' dosyasında tanımlı değil!")
+CHAT_ID = int(CHAT_ID)  # CHAT_ID bir tamsayı olmalı
 
-# Basit bir endpoint ekle
-@app.route('/')
-def keep_alive():
-    return "Bot is alive!", 200
-
-# Flask sunucusunu ayrı bir thread'de çalıştır
-def run_flask():
-    port = int(os.getenv("PORT", 10000))
-    app.run(host='0.0.0.0', port=port)
-
-# Kendi kendine ping atma fonksiyonu
-def self_ping():
-    while True:
-        try:
-            service_url = os.getenv("SERVICE_URL", "https://algdn46-bot.onrender.com")
-            requests.get(service_url)
-            logging.info("Self-ping gönderildi, bot uyanık tutuluyor...")
-        except Exception as e:
-            logging.error(f"Self-ping hatası: {str(e)}")
-        time.sleep(600)
-
-# Özel TLS yapılandırması
-context = create_urllib3_context(ssl_minimum_version=ssl.TLSVersion.TLSv1_2)
-context.set_ciphers("DEFAULT")
-session = requests.Session()
-adapter = requests.adapters.HTTPAdapter(pool_connections=10, pool_maxsize=10)
-session.mount("https://", adapter)
-session.verify = True
-
-# Binance exchange nesnesini oluştur (spot piyasası için)
-exchange = binance({
-    "session": session,
-    "enableRateLimit": True,
-    'apiKey': os.getenv('BINANCE_API_KEY'),
-    'secret': os.getenv('BINANCE_SECRET_KEY'),
-    'options': {'defaultType': 'spot'},
-})
-
-# Config ve Log Ayarları
-logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# Global Sabitler
-INTERVAL = '5m'
+# Ortak değişkenler
 LOOKBACK = 60
+INTERVAL = '5m'
+TR_TIMEZONE = pytz.timezone('Europe/Istanbul')
 last_signals = {}
 last_signal_times = {}
-TR_TIMEZONE = timezone(timedelta(hours=3))
-scaler = MinMaxScaler(feature_range=(0, 1))
-MODEL_DIR = "models"
-os.makedirs(MODEL_DIR, exist_ok=True)
 
-# Yüzde tabanlı SL ve TP oranları
-SL_PERCENT = 0.025  # %2.5 aşağıda
-TP1_PERCENT = 0.015  # %1.5 yukarıda
-TP2_PERCENT = 0.025  # %2.5 yukarıda
-TP3_PERCENT = 0.035  # %3.5 yukarıda
+# Logging yapılandırması
+logging.basicConfig(
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG,  # INFO yerine DEBUG
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
 
-# Yalnızca bu gruba sinyal gönderilecek
-ALLOWED_GROUP_CHAT_ID = -4652984499  # Senin grubunun chat_id değeri
+# Flask uygulaması (self-ping için)
+app = Flask(__name__)
 
-# Haber takibi için fonksiyon
-def fetch_crypto_news():
-    try:
-        url = "https://cointelegraph.com/tags/bitcoin"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        response = requests.get(url, headers=headers)
-        soup = BeautifulSoup(response.text, 'html.parser')
-        articles = soup.find_all('article', class_='post-card', limit=5)
-        
-        news_data = []
-        for article in articles:
-            title = article.find('span', class_='post-card__title').text.strip()
-            news_data.append(title)
-        return news_data
-    except Exception as e:
-        logger.error(f"Haber çekme hatası: {str(e)}")
-        return []
+@app.route('/')
+async def keep_alive():
+    return "Bot çalışıyor!"
 
-# Duygu analizi (basit kural tabanlı)
-def analyze_news_sentiment(news_data):
-    sentiment_score = 0
-    for news in news_data:
-        news_lower = news.lower()
-        if "elon musk" in news_lower and "bitcoin" in news_lower:
-            if any(word in news_lower for word in ["positive", "support", "bullish", "soar", "rise"]):
-                sentiment_score += 0.2
-            elif any(word in news_lower for word in ["negative", "criticize", "bearish", "drop", "fall"]):
-                sentiment_score -= 0.2
-    return sentiment_score
+# Exchange bağlantısı
+exchange = ccxt.binance({
+    'enableRateLimit': True,
+})
 
-# Spot piyasasında en fazla yükselen coini bul
-def get_top_gainer():
-    try:
-        tickers = exchange.fetch_tickers()
-        spot_tickers = {symbol: ticker for symbol, ticker in tickers.items() if 'USDT' in symbol and '/' in symbol}
-        
-        sorted_tickers = sorted(
-            spot_tickers.items(),
-            key=lambda x: x[1].get('percentage', 0),
-            reverse=True
-        )
-        if sorted_tickers:
-            top_symbol = sorted_tickers[0][0]
-            return top_symbol
-        return None
-    except Exception as e:
-        logger.error(f"Top gainer bulma hatası: {str(e)}")
-        return None
+# Özel JobQueue sınıfı
+class CustomJobQueue(JobQueue):
+    def __init__(self):
+        # JobQueue'un temel özelliklerini manuel olarak başlatıyoruz
+        self._application = None
+        self._is_running = False
+        # Bizim scheduler'ımızı oluşturuyoruz
+        self._scheduler = AsyncIOScheduler(timezone=TR_TIMEZONE)
+        self.scheduler = self._scheduler
 
-# LSTM Modelini oluştur
-def create_lstm_model():
+    def set_application(self, application):
+        self._application = application
+
+    def start(self):
+        if not self._is_running:
+            self._is_running = True
+            self.scheduler.start()
+            logger.info("CustomJobQueue scheduler started")
+
+    def stop(self):
+        if self._is_running:
+            self._is_running = False
+            self.scheduler.shutdown()
+            logger.info("CustomJobQueue scheduler stopped")
+
+# Model oluşturma
+def create_enhanced_model(input_shape):
     model = Sequential([
-        Input(shape=(LOOKBACK, 1)),
-        LSTM(units=50, return_sequences=True),
-        Dropout(0.2),
-        LSTM(units=50, return_sequences=False),
-        Dropout(0.2),
-        Dense(units=25),
-        Dense(units=1)
+        Input(shape=input_shape),
+        Bidirectional(LSTM(256, return_sequences=True)),
+        Dropout(0.4),
+        Bidirectional(LSTM(128)),
+        Dropout(0.3),
+        Dense(128, activation='relu'),
+        Dense(64, activation='relu'),
+        Dense(1)
     ])
-    model.compile(optimizer='adam', loss='mean_squared_error')
+    optimizer = Adam(learning_rate=0.0001, clipvalue=0.5)
+    model.compile(optimizer=optimizer, loss='huber', metrics=['mae'])
     return model
 
-# Modeli eğit ve güncelle
-def train_lstm_model(symbol, retrain=False):
-    model_path = os.path.join(MODEL_DIR, f"{symbol.replace('/', '_')}_lstm_model.keras")
-    scaler_path = os.path.join(MODEL_DIR, f"{symbol.replace('/', '_')}_scaler.pkl")
+# Veri işleme
+def preprocess_data(df):
+    logger.info("preprocess_data fonksiyonu çağrıldı.")
     
-    if os.path.exists(model_path) and os.path.exists(scaler_path) and not retrain:
-        logger.info(f"{symbol} için model ve scaler yükleniyor...")
-        model = load_model(model_path)
-        with open(scaler_path, 'rb') as f:
-            scaler = pickle.load(f)
-        return model, scaler
+    logger.info(f"Veri çerçevesi sütunları: {df.columns.tolist()}")
+    logger.info("Veri çerçevesi ilk 5 satır:\n" + df.head().to_string())
     
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=10000)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
-        
-        data = df['close'].values.reshape(-1, 1)
-        scaler = MinMaxScaler(feature_range=(0, 1))
-        scaled_data = scaler.fit_transform(data)
-        
-        X_train, y_train = [], []
-        for i in range(LOOKBACK, len(scaled_data)):
-            X_train.append(scaled_data[i-LOOKBACK:i, 0])
-            y_train.append(scaled_data[i, 0])
-        X_train, y_train = np.array(X_train), np.array(y_train)
-        X_train = np.reshape(X_train, (X_train.shape[0], X_train.shape[1], 1))
-        
-        model = create_lstm_model()
-        model.fit(X_train, y_train, epochs=5, batch_size=32, verbose=1)
-        
-        model.save(model_path)
-        with open(scaler_path, 'wb') as f:
+    df = df.drop(columns=['timestamp'])
+    
+    for column in ['open', 'high', 'low', 'close', 'volume']:
+        logger.info(f"{column} sütunu tipi: {df[column].dtype}")
+        df[column] = df[column].astype(float)
+    
+    df['ma7'] = df['close'].rolling(window=7).mean()
+    df['ma21'] = df['close'].rolling(window=21).mean()
+    df['rsi'] = ta.momentum.RSIIndicator(df['close'], window=14).rsi()
+    df['macd'] = ta.trend.macd_diff(df['close'], window_slow=26, window_fast=12, window_sign=9)
+    df['bollinger'] = ta.volatility.bollinger_hband_indicator(df['close'], window=20, window_dev=2)
+    
+    for column in ['ma7', 'ma21', 'rsi', 'macd', 'bollinger']:
+        logger.info(f"{column} sütunu tipi: {df[column].dtype}")
+        df[column] = df[column].astype(float)
+    
+    df = df.dropna()
+    
+    scaler = pickle.load(open('model_repo/scalers/global_scaler.pkl', 'rb')) if os.path.exists('model_repo/scalers/global_scaler.pkl') else None
+    if not scaler:
+        from sklearn.preprocessing import MinMaxScaler
+        scaler = MinMaxScaler()
+        scaler.fit(df)
+        with open('model_repo/scalers/global_scaler.pkl', 'wb') as f:
             pickle.dump(scaler, f)
+    
+    scaled_data = scaler.transform(df)
+    logger.info("Veri başarıyla ölçeklendirildi.")
+    
+    X, y = [], []
+    for i in range(LOOKBACK, len(scaled_data)):
+        X.append(scaled_data[i-LOOKBACK:i])
+        y.append(scaled_data[i, 3])
+    
+    return np.array(X), np.array(y)
+
+# Model yönetimi
+class ModelManager:
+    def __init__(self, symbol):
+        self.symbol = symbol
+        self.model = None
+        self.scaler = None
+
+    async def load_model(self):
+        model_path = os.path.join("model_repo", "models", f"{self.symbol.replace('/', '_')}.keras")
+        scaler_path = os.path.join("model_repo", "scalers", f"{self.symbol.replace('/', '_')}.pkl")
         
-        return model, scaler
-    except Exception as e:
-        logger.error(f"LSTM modeli eğitme hatası: {str(e)}")
-        return None, None
+        if os.path.exists(model_path):
+            self.model = load_model(model_path)
+            logger.info(f"{self.symbol} | Model yüklendi.")
+        if os.path.exists(scaler_path):
+            with open(scaler_path, 'rb') as f:
+                self.scaler = pickle.load(f)
+            logger.info(f"{self.symbol} | Scaler yüklendi.")
 
-# Fiyatı formatlama fonksiyonu (Güncellendi)
-def format_price(price, symbol):
-    # Sembole göre basamak sayısını belirle
-    if 'BTC' in symbol:
-        decimals = 2  # BTC için 2 basamak
-    elif 'ETH' in symbol:
-        decimals = 2  # ETH için 2 basamak
-    elif price < 0.01:
-        decimals = 6  # Küçük fiyatlar için 6 basamak
-    elif price < 1:
-        decimals = 4  # 1 USDT'den küçük fiyatlar için 4 basamak
-    else:
-        decimals = 3  # Diğer coin'ler için 3 basamak
+    async def train_model(self, ohlcv):
+        try:
+            logger.info(f"{self.symbol} | OHLCV verisi: {len(ohlcv)} satır")
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
+            
+            logger.info(f"{self.symbol} | preprocess_data fonksiyonu çağrılıyor...")
+            X, y = preprocess_data(df)
+            
+            logger.info(f"{self.symbol} | X veri tipi: {X.dtype}, şekli: {X.shape}")
+            logger.info(f"{self.symbol} | y veri tipi: {y.dtype}, şekli: {y.shape}")
+            
+            checkpoint_path = os.path.join("model_repo", "checkpoints", f"{self.symbol.replace('/', '_')}_checkpoint.keras")
+            os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
+            checkpoint = ModelCheckpoint(checkpoint_path, save_best_only=True, monitor='val_loss', mode='min')
+            
+            self.model = create_enhanced_model((LOOKBACK, X.shape[2]))
+            history = self.model.fit(X, y, epochs=75, batch_size=64, validation_split=0.2,
+                                    callbacks=[checkpoint, EarlyStopping(patience=5)], verbose=0)
+            
+            self.model.save(os.path.join("model_repo", "models", f"{self.symbol.replace('/', '_')}.keras"))
+            with open(os.path.join("model_repo", "scalers", f"{self.symbol.replace('/', '_')}.pkl"), 'wb') as f:
+                pickle.dump(self.scaler, f)
+            with open(os.path.join("model_repo", "training_history", f"{self.symbol.replace('/', '_')}_history.pkl"), 'wb') as f:
+                pickle.dump(history.history, f)
+            
+            await git_push(f"Model ve scaler güncellendi: {self.symbol}")
+        except Exception as e:
+            logger.error(f"{self.symbol} | Model eğitimi hatası: {str(e)}", exc_info=True)
+            raise
 
-    # Fiyatı yuvarla ve formatla
-    price_str = f"{price:.{decimals}f}"
-    # Gereksiz sıfırları kaldır
-    if '.' in price_str:
-        price_str = price_str.rstrip('0').rstrip('.')
-    return price_str
-
-# Fiyatları yuvarlama fonksiyonu (Güncellendi)
-def round_price(price, symbol):
-    # Sembole göre basamak sayısını belirle
-    if 'BTC' in symbol:
-        decimals = 2
-    elif 'ETH' in symbol:
-        decimals = 2
-    elif price < 0.01:
-        decimals = 6
-    elif price < 1:
-        decimals = 4
-    else:
-        decimals = 3
-    return round(price, decimals)
-
-async def generate_signal(symbol, model, scaler, news_sentiment):
+# Git push işlemi
+async def git_push(message):
     try:
-        # Anlık fiyatı fetch_ticker ile çek
-        ticker = exchange.fetch_ticker(symbol)
-        current_price = ticker['last']
-        logger.info(f"{symbol} | Anlık fiyat (fetch_ticker): {current_price}")
+        subprocess.run(["git", "add", "model_repo"], check=True)
+        subprocess.run(["git", "commit", "-m", message], check=True)
+        subprocess.run(["git", "push", "origin", "main"], check=True)
+        logger.info("Git push işlemi tamamlandı.")
+    except subprocess.CalledProcessError as e:
+        logger.error(f"Git push hatası: {str(e)}")
 
-        # OHLCV verilerini al (trend için)
-        ohlcv = exchange.fetch_ohlcv(symbol, INTERVAL, limit=LOOKBACK+5)
+# Fiyat yuvarlama
+def round_price(price, symbol):
+    info = exchange.markets[symbol]
+    tick_size = info['precision']['price']
+    return round(price / tick_size) * tick_size
+
+# Sinyal üretimi (Anlık veri entegrasyonu eklendi)
+async def generate_signal(symbol, manager, news_sentiment):
+    try:
+        if not manager.model or not manager.scaler:
+            logger.error(f"{symbol} | Model veya scaler yüklenemedi.")
+            return None, None, None, None
+        
+        # Anlık fiyatı al
+        logger.info(f"{symbol} | Anlık fiyat çekiliyor...")
+        ticker = await exchange.fetch_ticker(symbol)
+        current_price = ticker['last']  # Anlık fiyat
+        logger.info(f"{symbol} | Anlık fiyat: {current_price}")
+
+        # OHLCV verisi çek (geçmiş veriler için)
+        logger.info(f"{symbol} | OHLCV verisi çekiliyor...")
+        ohlcv = await exchange.fetch_ohlcv(symbol, INTERVAL, limit=LOOKBACK+14)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms').dt.tz_localize('UTC').dt.tz_convert(TR_TIMEZONE)
         
-        # Trend analizi
+        logger.info(f"{symbol} | Veriyi preprocess_data ile işleme...")
+        data, _ = preprocess_data(df)
+        
+        logger.info(f"{symbol} | data şekli: {data.shape}")
+        if data.shape[0] < LOOKBACK:
+            logger.error(f"{symbol} | Yeterli veri yok, data uzunluğu: {data.shape[0]}, gereken: {LOOKBACK}")
+            return None, None, None, None
+        
+        X = data[-LOOKBACK:]
+        X = np.array([X])
+        logger.info(f"{symbol} | X şekli: {X.shape}")
+        
+        expected_shape = (1, LOOKBACK, 10)
+        if X.shape != expected_shape:
+            logger.error(f"{symbol} | X şekli uyumsuz, beklenen: {expected_shape}, bulunan: {X.shape}")
+            return None, None, None, None
+        
+        logger.info(f"{symbol} | Tahmin yapılıyor...")
+        prediction = manager.model.predict(X, verbose=0)[0][0]
+        
+        # ATR ve diğer göstergeler için OHLCV verisini kullan
+        atr = ta.volatility.average_true_range(df['high'], df['low'], df['close'], window=14).iloc[-1]
+        
+        # Trend belirleme (hafif gevşetilmiş)
         last_5_closes = df['close'].tail(5).values
-        trend_direction = 'UP' if all(last_5_closes[i] < last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else \
-                         'DOWN' if all(last_5_closes[i] > last_5_closes[i+1] for i in range(len(last_5_closes)-1)) else 'NEUTRAL'
+        avg_closes = np.mean(last_5_closes)
+        if last_5_closes[-1] > avg_closes * 1.001:
+            trend_direction = 'UP'
+        elif last_5_closes[-1] < avg_closes * 0.999:
+            trend_direction = 'DOWN'
+        else:
+            trend_direction = 'NEUTRAL'
         logger.info(f"{symbol} | Trend yönü: {trend_direction}")
         
-        # Hacim analizi
+        # ATR ile volatilite kontrolü
+        if atr < current_price * 0.002:
+            logger.info(f"{symbol} | ATR çok düşük ({atr}), trend NEUTRAL olarak işaretlendi.")
+            trend_direction = 'NEUTRAL'
+        
+        # Hacim onayı (minimum gevşetme)
         avg_volume = df['volume'].rolling(window=14).mean().iloc[-1]
         current_volume = df['volume'].iloc[-1]
-        volume_confirmed = current_volume > avg_volume * 1.5
-        logger.info(f"{symbol} | Hacim onayı: {volume_confirmed}, Ortalama hacim: {avg_volume}, Mevcut hacim: {current_volume}")
+        volume_confirmed = current_volume > avg_volume * 1.8  # 2 yerine 1.8
+        if not volume_confirmed:
+            last_3_volumes = df['volume'].tail(3).values
+            if len(last_3_volumes) == 3 and all(last_3_volumes[i] < last_3_volumes[i+1] for i in range(len(last_3_volumes)-1)):
+                volume_confirmed = True
+        if not volume_confirmed:
+            logger.info(f"{symbol} | Hacim onayı başarısız.")
+            return None, None, None, None
         
-        # LSTM tahmini
-        data = df['close'].values.reshape(-1, 1)
-        scaled_data = scaler.transform(data)
-        X_test = scaled_data[-LOOKBACK:].reshape(1, LOOKBACK, 1)
-        predicted_price = model.predict(X_test, verbose=0)
-        predicted_price = scaler.inverse_transform(predicted_price)[0][0]
-        logger.info(f"{symbol} | Tahmin edilen fiyat: {predicted_price}")
+        # RSI kontrolü
+        rsi = ta.momentum.RSIIndicator(df['close'], window=14).rsi().iloc[-1]
+        if not (30 < rsi < 70):
+            logger.info(f"{symbol} | RSI uygun değil: {rsi}")
+            return None, None, None, None
         
-        # Önceki sinyali kontrol et
+        # MACD ile trend onayı
+        macd = ta.trend.macd_diff(df['close'], window_slow=26, window_fast=12, window_sign=9).iloc[-1]
+        if trend_direction == 'UP' and macd <= 0:
+            logger.info(f"{symbol} | MACD trendle uyumsuz ({macd}), sinyal engellendi.")
+            return None, None, None, None
+        elif trend_direction == 'DOWN' and macd >= 0:
+            logger.info(f"{symbol} | MACD trendle uyumsuz ({macd}), sinyal engellendi.")
+            return None, None, None, None
+        
+        # Haber sentiment kontrolü
+        if news_sentiment < -0.3 and trend_direction == 'UP':
+            logger.info(f"{symbol} | Negatif haber sentiment ({news_sentiment}) nedeniyle LONG sinyali engellendi.")
+            return None, None, None, None
+        elif news_sentiment > 0.3 and trend_direction == 'DOWN':
+            logger.info(f"{symbol} | Pozitif haber sentiment ({news_sentiment}) nedeniyle SHORT sinyali engellendi.")
+            return None, None, None, None
+        
+        # Önceki sinyal kontrolü
         if symbol in last_signals:
             last_signal = last_signals[symbol]
             last_direction, last_entry, last_sl, last_tp = last_signal
-            last_tp3 = last_tp[2]
-            
-            if predicted_price > current_price * 1.002 and last_direction == 'LONG':
-                if current_price < last_tp3:
-                    logger.info(f"{symbol} | Önceki LONG sinyali nedeniyle sinyal üretilmedi.")
+            last_tp_max = max(last_tp) if last_tp else last_entry
+            if prediction > current_price * 1.002 and last_direction == 'LONG':
+                if current_price < last_tp_max:
+                    logger.info(f"{symbol} | Önceki LONG sinyali nedeniyle atlanıyor.")
                     return None, None, None, None
-            elif predicted_price < current_price * 0.998 and last_direction == 'SHORT':
-                if current_price > last_tp3:
-                    logger.info(f"{symbol} | Önceki SHORT sinyali nedeniyle sinyal üretilmedi.")
+            elif prediction < current_price * 0.998 and last_direction == 'SHORT':
+                if current_price > last_tp_max:
+                    logger.info(f"{symbol} | Önceki SHORT sinyali nedeniyle atlanıyor.")
                     return None, None, None, None
         
-        # Haber etkisini dahil et
-        price_threshold = 0.001
+        # Sinyal üretimi (Anlık fiyatla karşılaştırma)
+        price_threshold = 0.005
         if news_sentiment > 0:
-            price_threshold -= news_sentiment
+            price_threshold -= news_sentiment * 0.5
         elif news_sentiment < 0:
-            price_threshold += news_sentiment
-        logger.info(f"{symbol} | Fiyat eşiği (haber etkisi dahil): {price_threshold}")
+            price_threshold += news_sentiment * 0.5
         
-        # Sinyal üretimi (yüzde tabanlı SL ve TP)
-        if (predicted_price > current_price * (1 + price_threshold) and
-            trend_direction in ['UP', 'NEUTRAL']):
-            sl = current_price * (1 - SL_PERCENT)
-            tp1 = current_price * (1 + TP1_PERCENT)
-            tp2 = current_price * (1 + TP2_PERCENT)
-            tp3 = current_price * (1 + TP3_PERCENT)
-            
-            entry = current_price
-            sl = round_price(sl, symbol)
-            tp1 = round_price(tp1, symbol)
-            tp2 = round_price(tp2, symbol)
-            tp3 = round_price(tp3, symbol)
-            
-            logger.info(f"{symbol} | LONG sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
-            return 'LONG', entry, sl, (tp1, tp2, tp3)
-        elif (predicted_price < current_price * (1 - price_threshold) and
-              trend_direction in ['DOWN', 'NEUTRAL']):
-            sl = current_price * (1 + SL_PERCENT)
-            tp1 = current_price * (1 - TP1_PERCENT)
-            tp2 = current_price * (1 - TP2_PERCENT)
-            tp3 = current_price * (1 - TP3_PERCENT)
-            
-            entry = current_price
-            sl = round_price(sl, symbol)
-            tp1 = round_price(tp1, symbol)
-            tp2 = round_price(tp2, symbol)
-            tp3 = round_price(tp3, symbol)
-            
-            logger.info(f"{symbol} | SHORT sinyali üretildi - Giriş: {entry}, SL: {sl}, TP1: {tp1}, TP2: {tp2}, TP3: {tp3}")
-            return 'SHORT', entry, sl, (tp1, tp2, tp3)
+        if prediction > current_price * (1 + price_threshold) and trend_direction == 'UP':
+            sl = current_price - (atr * 1.5)
+            tp = [current_price + (atr * i) for i in [2, 3, 5]]
+            tp_levels = [round_price(t, symbol) for t in tp if prediction >= t]
+            if not tp_levels:
+                logger.info(f"{symbol} | TP seviyeleri uygun değil.")
+                return None, None, None, None
+            logger.info(f"{symbol} | LONG sinyali üretildi.")
+            return 'LONG', current_price, round_price(sl, symbol), tuple(tp_levels)
+        
+        elif prediction < current_price * (1 - price_threshold) and trend_direction == 'DOWN':
+            sl = current_price + (atr * 1.5)
+            tp = [current_price - (atr * i) for i in [2, 3, 5]]
+            tp_levels = [round_price(t, symbol) for t in tp if prediction <= t]
+            if not tp_levels:
+                logger.info(f"{symbol} | TP seviyeleri uygun değil.")
+                return None, None, None, None
+            logger.info(f"{symbol} | SHORT sinyali üretildi.")
+            return 'SHORT', current_price, round_price(sl, symbol), tuple(tp_levels)
         
         logger.info(f"{symbol} | Sinyal üretilemedi.")
         return None, None, None, None
     except Exception as e:
-        logger.error(f"{symbol} | Hata: {str(e)}")
+        logger.error(f"{symbol} | Hata: {str(e)}", exc_info=True)
         return None, None, None, None
 
-async def format_telegram_message(symbol, direction, entry, sl, tp):
-    try:
-        clean_symbol = symbol.split('/')[0] + '/USDT'
-        direction_text = '🚀 Long' if direction == 'LONG' else '🔻 Short'
-        tp1, tp2, tp3 = tp
-        
-        # Fiyatları formatla
-        entry_formatted = format_price(entry, symbol)
-        sl_formatted = format_price(sl, symbol)
-        tp1_formatted = format_price(tp1, symbol)
-        tp2_formatted = format_price(tp2, symbol)
-        tp3_formatted = format_price(tp3, symbol)
-        
-        message = f"""
-🚦✈️ {clean_symbol} {direction_text}
-━━━━━━━━━━━━━━
-🪂 Giriş: {entry_formatted}
-🚫 SL: {sl_formatted}
-🎯 TP1: {tp1_formatted}
-🎯 TP2: {tp2_formatted}
-🎯 TP3: {tp3_formatted}
-🕒 Zaman: {datetime.now(TR_TIMEZONE).strftime('%H:%M')}
-"""
-        return message
-    except Exception as e:
-        logger.error(f"Mesaj formatlama hatası: {str(e)}")
-        return "Mesaj formatlama hatası oluştu!"
+# Haber sentiment analizi (basitleştirilmiş)
+async def fetch_news():
+    return [{'title': 'Sample news', 'description': 'Positive news'}]
 
-async def scan_symbols(context: ContextTypes.DEFAULT_TYPE, models: dict, scalers: dict):
-    try:
-        logger.info("Sinyaller taranıyor...")
-        for attempt in range(3):
-            try:
-                markets = exchange.load_markets()
-                logger.info("Markets başarıyla yüklendi.")
-                break
-            except Exception as e:
-                logger.error(f"load_markets attempt {attempt + 1} failed: {str(e)}")
-                if attempt < 2:
-                    await asyncio.sleep(2)
-                else:
-                    await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Binance verileri yüklenemedi, tekrar dene!")
-                    return
-        
-        # Haberleri çek ve analiz et
-        news_data = fetch_crypto_news()
-        news_sentiment = analyze_news_sentiment(news_data)
-        logger.info(f"Haber duygu analizi skoru: {news_sentiment}")
-        
-        # En fazla yükselen coini bul
-        top_gainer = get_top_gainer()
-        if top_gainer:
-            logger.info(f"En fazla yükselen coin: {top_gainer}")
-        
-        symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
-        logger.info(f"Taranacak sembol sayısı: {len(symbols)}")
-        
-        # Önce en fazla yükselen coini tara
-        found_signal = False
-        if top_gainer in symbols:
-            try:
-                if top_gainer not in models:
-                    model, scaler = train_lstm_model(top_gainer)
-                    if model is None or scaler is None:
-                        symbols.remove(top_gainer)
-                    else:
-                        models[top_gainer] = model
-                        scalers[top_gainer] = scaler
-                model = models[top_gainer]
-                scaler = scalers[top_gainer]
-                direction, entry, sl, tp = await generate_signal(top_gainer, model, scaler, news_sentiment)
-                if direction and entry:
-                    current_signal = (direction, entry, sl, tp)
-                    message = await format_telegram_message(top_gainer, direction, entry, sl, tp)
-                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
-                    await context.bot.send_message(
-                        chat_id=ALLOWED_GROUP_CHAT_ID,
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
-                    last_signals[top_gainer] = current_signal
-                    last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
-                    found_signal = True
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"{top_gainer} tarama hatası: {str(e)}")
-            symbols.remove(top_gainer)
-        
-        # Diğer sembolleri tara
-        for symbol in symbols:
-            try:
-                if symbol in last_signal_times:
-                    last_time = last_signal_times[symbol]
-                    if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
-                        logger.info(f"{symbol} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
-                        continue
-                
-                if symbol not in models:
-                    model, scaler = train_lstm_model(symbol)
-                    if model is None or scaler is None:
-                        continue
-                    models[symbol] = model
-                    scalers[symbol] = scaler
-                model = models[symbol]
-                scaler = scalers[symbol]
-                direction, entry, sl, tp = await generate_signal(symbol, model, scaler, news_sentiment)
-                if direction and entry:
-                    current_signal = (direction, entry, sl, tp)
-                    message = await format_telegram_message(symbol, direction, entry, sl, tp)
-                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
-                    await context.bot.send_message(
-                        chat_id=ALLOWED_GROUP_CHAT_ID,
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
-                    last_signals[symbol] = current_signal
-                    last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
-                    found_signal = True
-                    time.sleep(1)
-            except Exception as e:
-                logger.error(f"{symbol} tarama hatası: {str(e)}")
-        
-        if not found_signal:
-            await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Sinyal bulunamadı ede. Az sabret.")
-    except Exception as e:
-        logger.error(f"Genel tarama hatası: {str(e)}")
-        await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Bir hata oluştu, tekrar dene!")
+async def analyze_news_sentiment(news):
+    return 0.1  # Basitleştirilmiş
 
-async def continuous_scan(context: ContextTypes.DEFAULT_TYPE):
-    models = context.bot_data.get('models', {})
-    scalers = context.bot_data.get('scalers', {})
-    while True:
+# Top gainer belirleme
+async def get_top_gainer(symbols):
+    top_gainer = None
+    max_change = -float('inf')
+    
+    for symbol in symbols:
         try:
-            logger.info("Sürekli sinyal tarama başlıyor...")
-            markets = exchange.load_markets()
-            logger.info("Markets başarıyla yüklendi (continuous_scan).")
-            
-            # Haberleri çek ve analiz et
-            news_data = fetch_crypto_news()
-            news_sentiment = analyze_news_sentiment(news_data)
-            logger.info(f"Haber duygu analizi skoru: {news_sentiment}")
-            
-            # En fazla yükselen coini bul
-            top_gainer = get_top_gainer()
-            if top_gainer:
-                logger.info(f"En fazla yükselen coin: {top_gainer}")
-            
-            symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
-            logger.info(f"Taranacak sembol sayısı (continuous_scan): {len(symbols)}")
-            
-            # Önce en fazla yükselen coini tara
-            found_signal = False
-            if top_gainer in symbols:
-                try:
-                    if top_gainer in last_signal_times:
-                        last_time = last_signal_times[top_gainer]
-                        if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
-                            logger.info(f"{top_gainer} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
-                            symbols.remove(top_gainer)
-                            continue
-                    
-                    if top_gainer not in models or random.random() < 0.1:
-                        model, scaler = train_lstm_model(top_gainer, retrain=True)
-                        if model is None or scaler is None:
-                            symbols.remove(top_gainer)
-                            continue
-                        models[top_gainer] = model
-                        scalers[top_gainer] = scaler
-                    model = models[top_gainer]
-                    scaler = scalers[top_gainer]
-                    direction, entry, sl, tp = await generate_signal(top_gainer, model, scaler, news_sentiment)
-                    if direction and entry:
-                        current_signal = (direction, entry, sl, tp)
-                        message = await format_telegram_message(top_gainer, direction, entry, sl, tp)
-                        # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
-                        await context.bot.send_message(
-                            chat_id=ALLOWED_GROUP_CHAT_ID,
-                            text=message,
-                            parse_mode='HTML'
-                        )
-                        logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
-                        last_signals[top_gainer] = current_signal
-                        last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
-                        found_signal = True
-                        time.sleep(1)
-                except Exception as e:
-                    logger.error(f"{top_gainer} tarama hatası: {str(e)}")
-                symbols.remove(top_gainer)
-            
-            # Diğer sembolleri tara
-            for symbol in symbols:
-                if symbol in last_signal_times:
-                    last_time = last_signal_times[symbol]
-                    if (datetime.now(TR_TIMEZONE) - last_time).total_seconds() < 300:
-                        logger.info(f"{symbol} | Son 5 dakika içinde sinyal üretildi, atlanıyor.")
-                        continue
-                
-                if symbol not in models or random.random() < 0.1:
-                    model, scaler = train_lstm_model(symbol, retrain=True)
-                    if model is None or scaler is None:
-                        continue
-                    models[symbol] = model
-                    scalers[symbol] = scaler
-                model = models[symbol]
-                scaler = scalers[symbol]
-                direction, entry, sl, tp = await generate_signal(symbol, model, scaler, news_sentiment)
-                if direction and entry:
-                    current_signal = (direction, entry, sl, tp)
-                    message = await format_telegram_message(symbol, direction, entry, sl, tp)
-                    # Yalnızca ALLOWED_GROUP_CHAT_ID'ye sinyal gönder
-                    await context.bot.send_message(
-                        chat_id=ALLOWED_GROUP_CHAT_ID,
-                        text=message,
-                        parse_mode='HTML'
-                    )
-                    logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
-                    last_signals[symbol] = current_signal
-                    last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
-                    found_signal = True
-                    time.sleep(1)
-            if not found_signal:
-                logger.info("Sinyal bulunamadı, 300 saniye bekleniyor...")
-                await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Sinyal bulunamadı ede. Az sabret.")
-            context.bot_data['models'] = models
-            context.bot_data['scalers'] = scalers
-            await asyncio.sleep(300)
+            ohlcv = await exchange.fetch_ohlcv(symbol, '1h', limit=24)
+            df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+            price_change = (df['close'].iloc[-1] - df['open'].iloc[0]) / df['open'].iloc[0] * 100
+            if price_change > max_change:
+                max_change = price_change
+                top_gainer = symbol
         except Exception as e:
-            logger.error(f"Sürekli tarama hatası: {str(e)}")
-            await context.bot.send_message(chat_id=ALLOWED_GROUP_CHAT_ID, text="Bir hata oluştu, tekrar dene!")
-            await asyncio.sleep(300)
+            logger.error(f"{symbol} | Top gainer hatası: {str(e)}")
+            continue
+    
+    return top_gainer
 
+# Sembol tarama
+async def scan_symbols(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("scan_symbols fonksiyonu çağrılıyor...")
+    logger.info("Sinyaller taranıyor...")
+    
+    for attempt in range(1, 4):
+        logger.info(f"load_markets denemesi: {attempt}")
+        try:
+            markets = await exchange.load_markets()
+            break
+        except Exception as e:
+            logger.error(f"load_markets hatası: {str(e)}")
+            if attempt == 3:
+                logger.error("load_markets başarısız, işlem durduruluyor.")
+                return
+            await asyncio.sleep(5)
+    
+    logger.info("Markets yüklendi.")
+    symbols = [s for s in markets if markets[s]['type'] == 'spot' and markets[s]['active'] and 'USDT' in s]
+    
+    logger.info("Haberler çekiliyor...")
+    news = await fetch_news()
+    logger.info("Haber sentiment analizi yapılıyor...")
+    news_sentiment = await analyze_news_sentiment(news)
+    
+    logger.info("Top gainer belirleniyor...")
+    top_gainer = await get_top_gainer(symbols)
+    logger.info(f"Top gainer: {top_gainer}")
+    
+    logger.info(f"Toplam sembol sayısı: {len(symbols)}")
+    
+    found_signal = False
+    ALLOWED_GROUP_CHAT_ID = CHAT_ID  # Daha önce kullanılan değişkeni güncelliyoruz
+    
+    logger.info(f"Top gainer ({top_gainer}) için tarama başlıyor...")
+    try:
+        logger.info(f"{top_gainer} için yeni ModelManager oluşturuluyor...")
+        manager = ModelManager(top_gainer)
+        await manager.load_model()
+        
+        if not manager.model:
+            logger.info(f"{top_gainer} için OHLCV verisi çekiliyor...")
+            ohlcv = await exchange.fetch_ohlcv(top_gainer, INTERVAL, limit=300)  # limit=200 yerine 300
+            logger.info(f"{top_gainer} için model eğitiliyor...")
+            await manager.train_model(ohlcv)
+        
+        direction, entry, sl, tp = await generate_signal(top_gainer, manager, news_sentiment)
+        if direction:
+            current_signal = (direction, entry, sl, tp)
+            message = f"🚨 Sinyal: {top_gainer}\nYön: {direction}\nGiriş: {entry}\nSL: {sl}\nTP: {tp}"
+            await context.bot.send_message(
+                chat_id=ALLOWED_GROUP_CHAT_ID,
+                text=message,
+                parse_mode='HTML'
+            )
+            logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
+            last_signals[top_gainer] = current_signal
+            last_signal_times[top_gainer] = datetime.now(TR_TIMEZONE)
+            found_signal = True
+            await asyncio.sleep(1)  # time.sleep yerine asyncio.sleep kullanıyoruz
+    except Exception as e:
+        logger.error(f"{top_gainer} | Hata: {str(e)}", exc_info=True)
+    
+    logger.info("Diğer semboller için tarama başlıyor...")
+    for symbol in symbols:
+        if symbol == top_gainer:
+            continue
+        try:
+            logger.info(f"{symbol} için tarama yapılıyor...")
+            logger.info(f"{symbol} için yeni ModelManager oluşturuluyor...")
+            manager = ModelManager(symbol)
+            await manager.load_model()
+            
+            if not manager.model:
+                logger.info(f"{symbol} için OHLCV verisi çekiliyor...")
+                ohlcv = await exchange.fetch_ohlcv(symbol, INTERVAL, limit=300)  # limit=200 yerine 300
+                logger.info(f"{symbol} için model eğitiliyor...")
+                await manager.train_model(ohlcv)
+            
+            direction, entry, sl, tp = await generate_signal(symbol, manager, news_sentiment)
+            if direction:
+                current_signal = (direction, entry, sl, tp)
+                message = f"🚨 Sinyal: {symbol}\nYön: {direction}\nGiriş: {entry}\nSL: {sl}\nTP: {tp}"
+                await context.bot.send_message(
+                    chat_id=ALLOWED_GROUP_CHAT_ID,
+                    text=message,
+                    parse_mode='HTML'
+                )
+                logger.info(f"Sinyal gönderildi (chat_id: {ALLOWED_GROUP_CHAT_ID}): {message}")
+                last_signals[symbol] = current_signal
+                last_signal_times[symbol] = datetime.now(TR_TIMEZONE)
+                found_signal = True
+                await asyncio.sleep(1)  # time.sleep yerine asyncio.sleep kullanıyoruz
+        except Exception as e:
+            logger.error(f"{symbol} | Hata: {str(e)}", exc_info=True)
+            continue
+
+# Telegram komutları
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
     chat_type = update.effective_chat.type
     logger.info(f"Start komutu alındı, chat_id: {chat_id}, chat_type: {chat_type}")
     
-    # Eğer komut ALLOWED_GROUP_CHAT_ID'den gelmiyorsa, yalnızca bir uyarı mesajı gönder
-    if chat_id != ALLOWED_GROUP_CHAT_ID:
-        await update.message.reply_text("Bu bot yalnızca belirli bir gruba sinyal gönderir. Lütfen gruba katılın.")
-        return
+    logger.info("Kemerini tak mesajı gönderiliyor...")
+    await context.bot.send_message(chat_id=chat_id, text="Kemerini tak dostum, sinyaller geliyor...")
     
-    # Gruba hoş geldin mesajı gönder
-    await update.message.reply_text("🚀 Kemerini tak dostum, sinyaller geliyor...")
+    await scan_symbols(context)
     
-    # İlk taramayı başlat
-    await scan_symbols(context, context.bot_data.get('models', {}), context.bot_data.get('scalers', {}))
-    
-    # Sürekli taramayı başlat (yalnızca bir kez başlatılması için kontrol et)
     if not context.job_queue.get_jobs_by_name("continuous_scan"):
-        context.job_queue.run_repeating(continuous_scan, interval=300, first=5, name="continuous_scan")
+        context.job_queue.run_repeating(scan_symbols, interval=300, first=10, name="continuous_scan")
         logger.info("Sürekli tarama başlatıldı.")
 
-def main():
-    flask_thread = threading.Thread(target=run_flask)
-    flask_thread.daemon = True
-    flask_thread.start()
+async def stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    chat_id = update.effective_chat.id
+    logger.info(f"Stop komutu alındı, chat_id: {chat_id}")
+    
+    for job in context.job_queue.jobs():
+        if job.name == "continuous_scan":
+            job.schedule_removal()
+            logger.info("continuous_scan işi kaldırıldı.")
+    
+    await context.bot.send_message(chat_id=chat_id, text="Bot durduruldu, iyi şanslar!")
+    await context.application.job_queue.stop()
+    logger.info("Job queue durduruldu.")
 
-    ping_thread = threading.Thread(target=self_ping)
-    ping_thread.daemon = True
-    ping_thread.start()
+# Self-ping fonksiyonu
+async def self_ping(context: ContextTypes.DEFAULT_TYPE):
+    async with aiohttp.ClientSession() as session:
+        async with session.get("http://127.0.0.1:10000") as response:
+            if response.status == 200:
+                logger.info("Self-ping gönderildi, bot uyanık tutuluyor...")
+            else:
+                logger.error("Self-ping başarısız!")
 
-    load_dotenv("config.env")
-    token = os.getenv("TELEGRAM_TOKEN")
-    if not token:
-        logger.error("TELEGRAM_TOKEN bulunamadı!")
-        exit(1)
+# Ana fonksiyon
+async def main():
+    logger.info("Bot başlatılıyor...")
+    
+    # CustomJobQueue oluştur
+    job_queue = CustomJobQueue()
+    
+    # Application nesnesini oluştururken job_queue'u None olarak başlat
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
+    
+    # JobQueue'u manuel olarak sıfırla ve bizim CustomJobQueue'u bağla
+    application._job_queue = None  # Varsayılan job_queue'u sıfırlıyoruz
+    application.job_queue = job_queue
+    job_queue.set_application(application)
+    
+    # JobQueue'u başlat
+    job_queue.start()
+    
+    # Self-ping işini ekle
+    application.job_queue.run_repeating(self_ping, interval=300, first=10)
+    
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("stop", stop))
+    
+    await application.initialize()
+    await application.start()
+    logger.info("Application started")
+    
+    # Güncellemeleri almaya başla
+    logger.info("Polling başlatılıyor...")
+    await application.updater.start_polling(drop_pending_updates=True)
+    logger.info("Polling başlatıldı, komutlar bekleniyor...")
+    
+    # Manuel olarak scan_symbols fonksiyonunu çalıştır
+    logger.info("Manuel olarak scan_symbols çalıştırılıyor...")
+    await scan_symbols(application)
+    
+    loop = asyncio.get_event_loop()
+    loop.create_task(app.run(host='0.0.0.0', port=10000))
 
-    try:
-        application = Application.builder().token(token).build()
-        application.add_handler(CommandHandler("start", start))
-        logger.info("Bot başlatılıyor...")
-        application.run_polling()
-    except Exception as e:
-        logger.error(f"Bot başlatma hatası: {str(e)}")
-        if __name__ == "__main__":
-         port = int(os.getenv("PORT", 8000))  # Render PORT ortam değişkenini kullan, yoksa 8000
-         app.run(host="0.0.0.0", port=port)
+if __name__ == "__main__":
+    asyncio.run(main())
